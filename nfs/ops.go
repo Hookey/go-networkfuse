@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -43,8 +44,11 @@ type NFSRoot struct {
 }
 
 func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t) error {
+	var gen uint64
+	st.Ino, gen = r.applyIno()
+	log.Infof("ino %v, gen %v, pino %v, name %v", st.Ino, gen, parent.StableAttr().Ino, name)
 	//i := &Item{Ino: st.Ino, PIno: parent.StableAttr().Ino, Name: name, Stat: st}
-	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st)
+	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen)
 }
 
 func (r *NFSRoot) getattr(self *fs.Inode, st *syscall.Stat_t) (err error) {
@@ -68,17 +72,15 @@ func (r *NFSRoot) deleteDentry(parent *fs.Inode, name string) (err error) {
 	return
 }
 
-func (r *NFSRoot) applyIno() uint64 {
-	r.mu.Lock()
-	a := r.nextNodeId
-	r.nextNodeId++
-	r.mu.Unlock()
-
-	return a
+func (r *NFSRoot) applyIno() (uint64, uint64) {
+	if ino, gen := r.MetaStore.ApplyIno(); ino > 0 {
+		return ino, gen + 1
+	} else {
+		return atomic.AddUint64(&r.nextNodeId, 1) - 1, 1
+	}
 }
 
 func (r *NFSRoot) newNode(parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder {
-
 	return &NFSNode{
 		RootData: r,
 	}
@@ -112,11 +114,14 @@ func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
 
 	log.Infof("next ino %v", root.nextNodeId)
 	if root.nextNodeId == 1 {
-		st.Ino = root.applyIno()
-		if err := root.MetaStore.Insert(0, "/", &st); err != nil {
+		var gen uint64
+		st.Ino, gen = root.applyIno()
+		if err := root.MetaStore.Insert(RootBin, "/", &st, gen); err != nil {
 			return nil, err
 		}
 	}
+	//TODO: abnormal shutdown handling
+	//Move ino in temp bin to recycle bin
 
 	return root.newNode(nil, "", &st), nil
 }
@@ -183,7 +188,7 @@ var _ = (fs.NodeCreater)((*NFSNode)(nil))
 
 func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
 	log.Infof("create %s, %s, %o", n.Path(n.Root()), name, mode)
-	st := syscall.Stat_t{Ino: n.RootData.applyIno(), Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE}
+	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE}
 
 	pr := n.EmbeddedInode()
 	err := n.RootData.insert(pr, name, &st)
@@ -223,7 +228,7 @@ var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	log.Infof("mkdir /%s/%s, %o", n.Path(n.Root()), name, mode)
-	st := syscall.Stat_t{Ino: n.RootData.applyIno(), Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE}
+	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE}
 	pr := n.EmbeddedInode()
 	err := n.RootData.insert(pr, name, &st)
 	if err != nil {

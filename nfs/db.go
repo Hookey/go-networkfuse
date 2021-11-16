@@ -1,6 +1,7 @@
 package nfs
 
 import (
+	"fmt"
 	"syscall"
 
 	"github.com/timshannon/badgerhold/v4"
@@ -26,9 +27,9 @@ func (s *MetaStore) Close() {
 	s.Store.Close()
 }
 
-func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t) error {
+func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uint64) error {
 	//TODO: reuse ino, increase gen
-	i := Item{Ino: st.Ino, PIno: pino, Name: name, Stat: *st, Gen: 1}
+	i := Item{Ino: st.Ino, PIno: pino, Name: name, Stat: *st, Gen: gen}
 	return s.Store.Upsert(st.Ino, i)
 }
 
@@ -54,14 +55,38 @@ func (s *MetaStore) Delete(ino uint64) error {
 	return err
 }
 
+// SoftDelete moves certain inode to conceptual recycle bin(pino=0)
 func (s *MetaStore) SoftDelete(ino uint64) error {
-	err := s.Store.ForEach(badgerhold.Where("Ino").Eq(ino), func(i *Item) error {
-		i.PIno = 0
+	return s.Store.UpdateMatching(&Item{}, badgerhold.Where("Ino").Eq(ino), func(record interface{}) error {
+		i, ok := record.(*Item)
+		if !ok {
+			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+		}
+
+		i.PIno = RecycleBin
 		return nil
 	})
-	return err
 }
 
+// ApplyIno returns grab one (Ino, Gen) pair from recycle bin to temp, so it won't be re-applied.
+func (s *MetaStore) ApplyIno() (uint64, uint64) {
+	var ino, gen uint64
+	//TODO: test parallel applyino
+	s.Store.UpdateMatching(&Item{}, badgerhold.Where("PIno").Eq(uint64(RecycleBin)).Limit(1), func(record interface{}) error {
+		i, ok := record.(*Item)
+		if !ok {
+			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+		}
+
+		//log.Infof("apply %v", i)
+		i.PIno = uint64(TempBin)
+		ino, gen = i.Ino, i.Gen
+		return nil
+	})
+	return ino, gen
+}
+
+// NextAllocateIno inspects the max number of inode, and returns its value adds one.
 func (s *MetaStore) NextAllocateIno() uint64 {
 	count, _ := s.Store.Count(&Item{}, nil)
 	return count + 1

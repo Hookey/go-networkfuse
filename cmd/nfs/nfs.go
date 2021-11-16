@@ -120,6 +120,8 @@ func main() {
 	defer store.Close()
 
 	orig := flag.Arg(1)
+	//TODO: root.embed().stableattr.ino is set to 0, should be 1 instead. Need to wait go-fuse fix
+	// https://github.com/hanwen/go-fuse/issues/399
 	nfsRoot, err := nfs.NewNFSRoot(orig, store)
 	if err != nil {
 		log.Fatalf("NewLoopbackRoot(%s): %v\n", orig, err)
