@@ -70,9 +70,9 @@ func (r *NFSRoot) deleteDentry(parent *fs.Inode, name string) (err error) {
 
 func (r *NFSRoot) applyIno() uint64 {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	a := r.nextNodeId
 	r.nextNodeId++
+	r.mu.Unlock()
 
 	return a
 }
@@ -103,16 +103,19 @@ func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
 	}
 
 	root := &NFSRoot{
-		Path:       rootPath,
-		Dev:        uint64(st.Dev),
-		MetaStore:  store,
-		nextNodeId: 2, //TODO: find next empty when mounting
+		Path:      rootPath,
+		Dev:       uint64(st.Dev),
+		MetaStore: store,
 	}
 
-	st.Ino = 1
-	//TODO: check root exists, or insert root to DB
-	if err := root.MetaStore.Insert(0, "/", &st); err != nil {
-		return nil, err
+	root.nextNodeId = store.NextAllocateIno()
+
+	log.Infof("next ino %v", root.nextNodeId)
+	if root.nextNodeId == 1 {
+		st.Ino = root.applyIno()
+		if err := root.MetaStore.Insert(0, "/", &st); err != nil {
+			return nil, err
+		}
 	}
 
 	return root.newNode(nil, "", &st), nil

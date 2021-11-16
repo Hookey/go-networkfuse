@@ -1,7 +1,6 @@
 package nfs
 
 import (
-	"os"
 	"syscall"
 
 	"github.com/timshannon/badgerhold/v4"
@@ -12,9 +11,6 @@ type MetaStore struct {
 }
 
 func NewMetaStore(db string) (*MetaStore, error) {
-	os.RemoveAll(db)
-	err := os.Mkdir(db, 0777)
-
 	options := badgerhold.DefaultOptions
 	options.Dir = db
 	options.ValueDir = db
@@ -33,7 +29,7 @@ func (s *MetaStore) Close() {
 func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t) error {
 	//TODO: reuse ino, increase gen
 	i := Item{Ino: st.Ino, PIno: pino, Name: name, Stat: *st, Gen: 1}
-	return s.Store.Insert(st.Ino, i)
+	return s.Store.Upsert(st.Ino, i)
 }
 
 func (s *MetaStore) Getattr(ino uint64) (syscall.Stat_t, error) {
@@ -59,28 +55,17 @@ func (s *MetaStore) Delete(ino uint64) error {
 }
 
 func (s *MetaStore) SoftDelete(ino uint64) error {
-	err := store.ForEach(badgerhold.Where("Ino").Eq(ino), func(i *Item) error {
-		i.Pino = 0
+	err := s.Store.ForEach(badgerhold.Where("Ino").Eq(ino), func(i *Item) error {
+		i.PIno = 0
 		return nil
 	})
+	return err
 }
 
-/*func (s *MetaStore) NextIno() error {
-	err := s.Store.FindOne(&i, badgerhold.Where("Ino").MatchFunc(
-		func(ra *badgerhold.RecordAccess) (bool, error) {
-			grp, err := ra.SubAggregateQuery(badgerhold.Where("Category").
-				Eq(ra.Record().(*ItemTest).Category), "Category")
-			if err != nil {
-				return false, err
-			}
-
-			max := &ItemTest{}
-
-			grp[0].Max("ID", max)
-			return ra.Field().(int) == max.ID, nil
-		}),
-
-}*/
+func (s *MetaStore) NextAllocateIno() uint64 {
+	count, _ := s.Store.Count(&Item{}, nil)
+	return count + 1
+}
 
 type Item struct {
 	Ino  uint64 `badgerhold:"key"`
