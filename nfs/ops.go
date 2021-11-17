@@ -82,6 +82,14 @@ func (r *NFSRoot) isEmptyDir(self *fs.Inode) bool {
 	return r.MetaStore.IsEmptyDir(self.StableAttr().Ino)
 }
 
+func (r *NFSRoot) replace(src, dst, dstDir *fs.Inode, dstname string) error {
+	return r.MetaStore.Replace(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname)
+}
+
+func (r *NFSRoot) rename(src, dstDir *fs.Inode, dstname string) error {
+	return r.MetaStore.Rename(src.StableAttr().Ino, dstDir.StableAttr().Ino, dstname)
+}
+
 func (r *NFSRoot) newNode(parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder {
 	return &NFSNode{
 		RootData: r,
@@ -276,6 +284,35 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 	err := syscall.Unlink(cachePath)
 	n.RootData.delete(ch)
 	return fs.ToErrno(err)
+}
+
+var _ = (fs.NodeRenamer)((*NFSNode)(nil))
+
+func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
+	//TODO: flags&RENAME_EXCHANGE
+	//TODO: flags&RENAME_NOREPLACE
+	pr1 := n.EmbeddedInode()
+	ch1 := pr1.GetChild(name)
+	pr2 := newParent.EmbeddedInode()
+	ch2 := pr2.GetChild(newName)
+
+	if ch2 != nil {
+		// if target is dir, check it is empty
+		if ch2.StableAttr().Mode&syscall.S_IFDIR != 0 && !n.RootData.isEmptyDir(ch2) {
+			return syscall.ENOTEMPTY
+			// if target is file, delete cache
+		} else if ch2.StableAttr().Mode&syscall.S_IFREG != 0 {
+			cachePath := filepath.Join(n.RootData.Path, strconv.FormatUint(ch2.StableAttr().Ino, 10))
+			os.Remove(cachePath)
+		}
+
+		//TODO update stat
+		err := n.RootData.replace(ch1, ch2, pr2, newName)
+		return fs.ToErrno(err)
+	} else {
+		err := n.RootData.rename(ch1, pr2, newName)
+		return fs.ToErrno(err)
+	}
 }
 
 /*var _ = (NodeStatfser)((*NFSNode)(nil))

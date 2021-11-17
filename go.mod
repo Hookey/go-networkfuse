@@ -3,6 +3,7 @@ module example.com/nfuse
 go 1.16
 
 require (
+	github.com/dgraph-io/badger/v3 v3.2103.1 // indirect
 	github.com/hanwen/go-fuse/v2 v2.1.0
 	github.com/ipfs/go-log/v2 v2.3.0
 	github.com/timshannon/badgerhold/v4 v4.0.1

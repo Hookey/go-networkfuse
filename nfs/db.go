@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"syscall"
 
+	"github.com/dgraph-io/badger/v3"
 	"github.com/timshannon/badgerhold/v4"
 )
 
@@ -28,7 +29,6 @@ func (s *MetaStore) Close() {
 }
 
 func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uint64) error {
-	//TODO: reuse ino, increase gen
 	i := Item{Ino: st.Ino, PIno: pino, Name: name, Stat: *st, Gen: gen}
 	return s.Store.Upsert(st.Ino, i)
 }
@@ -95,6 +95,49 @@ func (s *MetaStore) NextAllocateIno() uint64 {
 func (s *MetaStore) IsEmptyDir(ino uint64) bool {
 	count, err := s.Store.Count(&Item{}, badgerhold.Where("PIno").Eq(ino).Limit(1))
 	return count == 0 && err == nil
+}
+
+// Replace is a variant of rename from ino to ino2
+func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
+	return s.Store.Badger().Update(func(tx *badger.Txn) error {
+		if err := s.Store.TxUpdateMatching(tx, &Item{}, badgerhold.Where("Ino").Eq(ino2), func(record interface{}) error {
+			i, ok := record.(*Item)
+			if !ok {
+				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+			}
+
+			i.PIno = RecycleBin
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		return s.Store.TxUpdateMatching(tx, &Item{}, badgerhold.Where("Ino").Eq(ino), func(record interface{}) error {
+			i, ok := record.(*Item)
+			if !ok {
+				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+			}
+
+			//log.Infof("apply %v", i)
+			i.PIno = pino2
+			i.Name = name2
+			return nil
+		})
+	})
+}
+
+func (s *MetaStore) Rename(ino, pino2 uint64, name2 string) error {
+	return s.Store.UpdateMatching(&Item{}, badgerhold.Where("Ino").Eq(ino), func(record interface{}) error {
+		i, ok := record.(*Item)
+		if !ok {
+			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+		}
+
+		//log.Infof("apply %v", i)
+		i.PIno = pino2
+		i.Name = name2
+		return nil
+	})
 }
 
 type Item struct {
