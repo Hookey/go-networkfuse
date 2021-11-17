@@ -92,6 +92,11 @@ func (s *MetaStore) NextAllocateIno() uint64 {
 	return count + 1
 }
 
+func (s *MetaStore) IsEmptyDir(ino uint64) bool {
+	count, err := s.Store.Count(&Item{}, badgerhold.Where("PIno").Eq(ino).Limit(1))
+	return count == 0 && err == nil
+}
+
 type Item struct {
 	Ino  uint64 `badgerhold:"key"`
 	PIno uint64

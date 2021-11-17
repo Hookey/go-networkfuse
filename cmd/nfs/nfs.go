@@ -133,6 +133,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
+	//TODO: umount mountpoint correctly
 	defer server.Unmount()
 	server.Wait()
 }

@@ -47,7 +47,6 @@ func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t) erro
 	var gen uint64
 	st.Ino, gen = r.applyIno()
 	log.Infof("ino %v, gen %v, pino %v, name %v", st.Ino, gen, parent.StableAttr().Ino, name)
-	//i := &Item{Ino: st.Ino, PIno: parent.StableAttr().Ino, Name: name, Stat: st}
 	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen)
 }
 
@@ -62,7 +61,6 @@ func (r *NFSRoot) lookup(parent *fs.Inode, name string, st *syscall.Stat_t) (err
 }
 
 func (r *NFSRoot) delete(self *fs.Inode) (err error) {
-	//err = r.MetaStore.Delete(self.StableAttr().Ino)
 	err = r.MetaStore.SoftDelete(self.StableAttr().Ino)
 	return
 }
@@ -78,6 +76,10 @@ func (r *NFSRoot) applyIno() (uint64, uint64) {
 	} else {
 		return atomic.AddUint64(&r.nextNodeId, 1) - 1, 1
 	}
+}
+
+func (r *NFSRoot) isEmptyDir(self *fs.Inode) bool {
+	return r.MetaStore.IsEmptyDir(self.StableAttr().Ino)
 }
 
 func (r *NFSRoot) newNode(parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder {
@@ -246,7 +248,6 @@ var _ = (fs.NodeUnlinker)((*NFSNode)(nil))
 var _ = (fs.NodeRmdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
-	//st := syscall.Stat_t{}
 	pr := n.EmbeddedInode()
 	ch := pr.GetChild(name)
 	if ch == nil {
@@ -254,31 +255,21 @@ func (n *NFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 	}
 
 	log.Infof("Rmdir /%s/%s, %v", n.Path(n.Root()), name, ch.StableAttr().Ino)
-	/*n.RootData.lookup(pr, name, &st)
-	if st.Ino == 0 {
-		return fs.OK
-	}*/
 
-	//TODO: check not empty dir
-	//n.RootData.delete(pr, name)
+	if !n.RootData.isEmptyDir(ch) {
+		return syscall.ENOTEMPTY
+	}
 	n.RootData.delete(ch)
 	return fs.OK
 }
 
 func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
-	//st := syscall.Stat_t{}
-	pr := n.EmbeddedInode()
-
 	//TODO: hardlink feature, skip it for now
+	pr := n.EmbeddedInode()
 	ch := pr.GetChild(name)
 	if ch == nil {
 		return fs.OK
 	}
-
-	/*n.RootData.lookup(pr, name, &st)
-	if st.Ino == 0 {
-		return fs.OK
-	}*/
 
 	cachePath := filepath.Join(n.RootData.Path, strconv.FormatUint(ch.StableAttr().Ino, 10))
 	log.Infof("Unlink /%s/%s, at %s", n.Path(n.Root()), name, cachePath)
