@@ -33,16 +33,16 @@ func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uin
 	return s.Store.Upsert(st.Ino, i)
 }
 
-func (s *MetaStore) Getattr(ino uint64) (syscall.Stat_t, error) {
+func (s *MetaStore) Lookup(ino uint64) *Item {
 	var i Item
-	err := s.Store.FindOne(&i, badgerhold.Where("Ino").Eq(ino))
-	return i.Stat, err
+	s.Store.FindOne(&i, badgerhold.Where("Ino").Eq(ino))
+	return &i
 }
 
-func (s *MetaStore) Lookup(pino uint64, name string) (syscall.Stat_t, error) {
+func (s *MetaStore) LookupDentry(pino uint64, name string) *Item {
 	var i Item
-	err := s.Store.FindOne(&i, badgerhold.Where("PIno").Eq(pino).And("Name").Eq(name))
-	return i.Stat, err
+	s.Store.FindOne(&i, badgerhold.Where("PIno").Eq(pino).And("Name").Eq(name))
+	return &i
 }
 
 func (s *MetaStore) DeleteDentry(pino uint64, name string) error {

@@ -48,24 +48,20 @@ func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t, gen 
 	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen)
 }
 
-func (r *NFSRoot) getattr(self *fs.Inode, st *syscall.Stat_t) (err error) {
-	*st, err = r.MetaStore.Getattr(self.StableAttr().Ino)
-	return
+func (r *NFSRoot) getattr(self *fs.Inode) *Item {
+	return r.MetaStore.Lookup(self.StableAttr().Ino)
 }
 
-func (r *NFSRoot) lookup(parent *fs.Inode, name string, st *syscall.Stat_t) (err error) {
-	*st, err = r.MetaStore.Lookup(parent.StableAttr().Ino, name)
-	return
+func (r *NFSRoot) lookup(parent *fs.Inode, name string) *Item {
+	return r.MetaStore.LookupDentry(parent.StableAttr().Ino, name)
 }
 
-func (r *NFSRoot) delete(self *fs.Inode) (err error) {
-	err = r.MetaStore.SoftDelete(self.StableAttr().Ino)
-	return
+func (r *NFSRoot) delete(self *fs.Inode) error {
+	return r.MetaStore.SoftDelete(self.StableAttr().Ino)
 }
 
-func (r *NFSRoot) deleteDentry(parent *fs.Inode, name string) (err error) {
-	err = r.MetaStore.DeleteDentry(parent.StableAttr().Ino, name)
-	return
+func (r *NFSRoot) deleteDentry(parent *fs.Inode, name string) error {
+	return r.MetaStore.DeleteDentry(parent.StableAttr().Ino, name)
 }
 
 func (r *NFSRoot) applyIno() (uint64, uint64) {
@@ -162,33 +158,29 @@ func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOu
 
 	log.Infof("getattr %s", n.Path(n.Root()))
 
-	st := syscall.Stat_t{}
 	self := n.EmbeddedInode()
-	err := n.RootData.getattr(self, &st)
-	log.Info(err)
+	i := n.RootData.getattr(self)
 
-	if err != nil {
-		return fs.ToErrno(err)
+	if i.Ino == 0 {
+		return fs.ToErrno(os.ErrNotExist)
 	}
-	out.FromStat(&st)
+	out.FromStat(&i.Stat)
 	return fs.OK
 }
 
 var _ = (fs.NodeLookuper)((*NFSNode)(nil))
 
 func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	st := syscall.Stat_t{}
 	pr := n.EmbeddedInode()
 	log.Infof("lookup  %s/%s", n.Path(n.Root()), name)
-	err := n.RootData.lookup(pr, name, &st)
-	log.Info(st.Ino, err)
-	if st.Ino == 0 {
+	i := n.RootData.lookup(pr, name)
+	if i.Ino == 0 {
 		return nil, fs.ToErrno(os.ErrNotExist)
 	}
 
-	out.Attr.FromStat(&st)
-	node := n.RootData.newNode(pr, name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st, 1))
+	out.Attr.FromStat(&i.Stat)
+	node := n.RootData.newNode(pr, name, &i.Stat)
+	ch := n.NewInode(ctx, node, idFromStat(&i.Stat, i.Gen))
 	return ch, 0
 }
 
@@ -199,7 +191,7 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE}
 
 	pr := n.EmbeddedInode()
-	ch, err := n.NewChild(ctx, pr, name, &st)
+	ch, err := n.newChild(ctx, pr, name, &st)
 	if err != nil {
 		return nil, nil, 0, fs.ToErrno(err)
 	}
@@ -216,7 +208,7 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 	return ch, lf, 0, 0
 }
 
-func (n *NFSNode) NewChild(ctx context.Context, parent *fs.Inode, name string, st *syscall.Stat_t) (*fs.Inode, error) {
+func (n *NFSNode) newChild(ctx context.Context, parent *fs.Inode, name string, st *syscall.Stat_t) (*fs.Inode, error) {
 	var gen uint64
 	st.Ino, gen = n.RootData.applyIno()
 	err := n.RootData.insert(parent, name, st, gen)
@@ -249,7 +241,7 @@ func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 	log.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE}
 	pr := n.EmbeddedInode()
-	ch, err := n.NewChild(ctx, pr, name, &st)
+	ch, err := n.newChild(ctx, pr, name, &st)
 	if err != nil {
 		return nil, fs.ToErrno(err)
 	}
