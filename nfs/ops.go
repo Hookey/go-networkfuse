@@ -43,9 +43,7 @@ type NFSRoot struct {
 	NewNode func(rootData *NFSRoot, parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder
 }
 
-func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t) error {
-	var gen uint64
-	st.Ino, gen = r.applyIno()
+func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t, gen uint64) error {
 	log.Infof("ino %v, gen %v, pino %v, name %v", st.Ino, gen, parent.StableAttr().Ino, name)
 	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen)
 }
@@ -181,7 +179,7 @@ var _ = (fs.NodeLookuper)((*NFSNode)(nil))
 func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	st := syscall.Stat_t{}
 	pr := n.EmbeddedInode()
-	log.Infof("lookup  %s %s", n.Path(n.Root()), name)
+	log.Infof("lookup  %s/%s", n.Path(n.Root()), name)
 	err := n.RootData.lookup(pr, name, &st)
 	log.Info(st.Ino, err)
 	if st.Ino == 0 {
@@ -197,28 +195,39 @@ func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 var _ = (fs.NodeCreater)((*NFSNode)(nil))
 
 func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	log.Infof("create %s, %s, %o", n.Path(n.Root()), name, mode)
+	log.Infof("create %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE}
 
 	pr := n.EmbeddedInode()
-	err := n.RootData.insert(pr, name, &st)
+	ch, err := n.NewChild(ctx, pr, name, &st)
 	if err != nil {
 		return nil, nil, 0, fs.ToErrno(err)
 	}
 
 	flags = flags &^ syscall.O_APPEND
-	cachePath := filepath.Join(n.RootData.Path, strconv.FormatUint(st.Ino, 10))
-	fd, err := syscall.Open(cachePath, int(flags)|os.O_CREATE, mode)
+	fd, err := syscall.Open(n.cachePath(ch), int(flags)|os.O_CREATE, mode)
 	if err != nil {
-		//TODO: delete meta
+		n.RootData.delete(ch)
 		return nil, nil, 0, fs.ToErrno(err)
 	}
 
-	node := n.RootData.newNode(pr, name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st, 1))
 	lf := fs.NewLoopbackFile(fd)
 	out.FromStat(&st)
 	return ch, lf, 0, 0
+}
+
+func (n *NFSNode) NewChild(ctx context.Context, parent *fs.Inode, name string, st *syscall.Stat_t) (*fs.Inode, error) {
+	var gen uint64
+	st.Ino, gen = n.RootData.applyIno()
+	err := n.RootData.insert(parent, name, st, gen)
+	if err != nil {
+		return nil, err
+	}
+
+	node := n.RootData.newNode(parent, name, st)
+	ch := n.NewInode(ctx, node, idFromStat(st, gen))
+
+	return ch, nil
 }
 
 // preserveOwner sets uid and gid of `path` according to the caller information
@@ -237,16 +246,14 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	log.Infof("mkdir /%s/%s, %o", n.Path(n.Root()), name, mode)
+	log.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE}
 	pr := n.EmbeddedInode()
-	err := n.RootData.insert(pr, name, &st)
+	ch, err := n.NewChild(ctx, pr, name, &st)
 	if err != nil {
 		return nil, fs.ToErrno(err)
 	}
 
-	node := n.RootData.newNode(pr, name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st, 1))
 	out.Attr.FromStat(&st)
 
 	return ch, 0
@@ -262,7 +269,7 @@ func (n *NFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 		return fs.OK
 	}
 
-	log.Infof("Rmdir /%s/%s, %v", n.Path(n.Root()), name, ch.StableAttr().Ino)
+	log.Infof("Rmdir %s/%s, %v", n.Path(n.Root()), name, ch.StableAttr().Ino)
 
 	if !n.RootData.isEmptyDir(ch) {
 		return syscall.ENOTEMPTY
@@ -279,9 +286,9 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 		return fs.OK
 	}
 
-	cachePath := filepath.Join(n.RootData.Path, strconv.FormatUint(ch.StableAttr().Ino, 10))
-	log.Infof("Unlink /%s/%s, at %s", n.Path(n.Root()), name, cachePath)
-	err := syscall.Unlink(cachePath)
+	log.Infof("Unlink /%s/%s", n.Path(n.Root()), name)
+	// TODO: ignore unlink cache error?
+	err := syscall.Unlink(n.cachePath(ch))
 	n.RootData.delete(ch)
 	return fs.ToErrno(err)
 }
@@ -302,8 +309,7 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 			return syscall.ENOTEMPTY
 			// if target is file, delete cache
 		} else if ch2.StableAttr().Mode&syscall.S_IFREG != 0 {
-			cachePath := filepath.Join(n.RootData.Path, strconv.FormatUint(ch2.StableAttr().Ino, 10))
-			os.Remove(cachePath)
+			syscall.Unlink(n.cachePath(ch2))
 		}
 
 		//TODO update stat
@@ -315,8 +321,11 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	}
 }
 
+func (n *NFSNode) cachePath(self *fs.Inode) string {
+	return filepath.Join(n.RootData.Path, strconv.FormatUint(self.StableAttr().Ino, 10))
+}
+
 /*var _ = (NodeStatfser)((*NFSNode)(nil))
-var _ = (NodeStatfser)((*NFSNode)(nil))
 var _ = (NodeGetattrer)((*NFSNode)(nil))
 var _ = (NodeGetxattrer)((*NFSNode)(nil))
 var _ = (NodeSetxattrer)((*NFSNode)(nil))
@@ -346,34 +355,6 @@ func (n *NFSNode) Statfs(ctx context.Context, out *fs.StatfsOut) syscall.Errno {
 	return fs.OK
 }
 
-func (n *NFSNode) Lookup(ctx context.Context, name string, out *fs.EntryOut) (*Inode, syscall.Errno) {
-	p := filepath.Join(n.path(), name)
-
-	st := syscall.Stat_t{}
-	err := syscall.Lstat(p, &st)
-	if err != nil {
-		return nil, fs.ToErrno(err)
-	}
-
-	out.Attr.FromStat(&st)
-	node := n.RootData.newNode(n.EmbeddedInode(), name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st))
-	return ch, 0
-}
-
-// preserveOwner sets uid and gid of `path` according to the caller information
-// in `ctx`.
-func (n *NFSNode) preserveOwner(ctx context.Context, path string) error {
-	if os.Getuid() != 0 {
-		return nil
-	}
-	caller, ok := fs.FromContext(ctx)
-	if !ok {
-		return nil
-	}
-	return syscall.Lchown(path, int(caller.Uid), int(caller.Gid))
-}
-
 func (n *NFSNode) Mknod(ctx context.Context, name string, mode, rdev uint32, out *fs.EntryOut) (*Inode, syscall.Errno) {
 	p := filepath.Join(n.path(), name)
 	err := syscall.Mknod(p, mode, int(rdev))
@@ -392,94 +373,6 @@ func (n *NFSNode) Mknod(ctx context.Context, name string, mode, rdev uint32, out
 	node := n.RootData.newNode(n.EmbeddedInode(), name, &st)
 	ch := n.NewInode(ctx, node, idFromStat(&st))
 
-	return ch, 0
-}
-
-func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fs.EntryOut) (*Inode, syscall.Errno) {
-	p := filepath.Join(n.path(), name)
-	err := os.Mkdir(p, os.FileMode(mode))
-	if err != nil {
-		return nil, fs.ToErrno(err)
-	}
-	n.preserveOwner(ctx, p)
-	st := syscall.Stat_t{}
-	if err := syscall.Lstat(p, &st); err != nil {
-		syscall.Rmdir(p)
-		return nil, fs.ToErrno(err)
-	}
-
-	out.Attr.FromStat(&st)
-
-	node := n.RootData.newNode(n.EmbeddedInode(), name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st))
-
-	return ch, 0
-}
-
-func (n *NFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
-	p := filepath.Join(n.path(), name)
-	err := syscall.Rmdir(p)
-	return fs.ToErrno(err)
-}
-
-func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
-	p := filepath.Join(n.path(), name)
-	err := syscall.Unlink(p)
-	return fs.ToErrno(err)
-}
-
-func (n *NFSNode) Rename(ctx context.Context, name string, newParent InodeEmbedder, newName string, flags uint32) syscall.Errno {
-	if flags&RENAME_EXCHANGE != 0 {
-		return n.renameExchange(name, newParent, newName)
-	}
-
-	p1 := filepath.Join(n.path(), name)
-	p2 := filepath.Join(n.RootData.Path, newParent.EmbeddedInode().Path(nil), newName)
-
-	err := syscall.Rename(p1, p2)
-	return fs.ToErrno(err)
-}
-
-var _ = (NodeCreater)((*NFSNode)(nil))
-
-func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fs.EntryOut) (inode *Inode, fh FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	p := filepath.Join(n.path(), name)
-	flags = flags &^ syscall.O_APPEND
-	fd, err := syscall.Open(p, int(flags)|os.O_CREATE, mode)
-	if err != nil {
-		return nil, nil, 0, fs.ToErrno(err)
-	}
-	n.preserveOwner(ctx, p)
-	st := syscall.Stat_t{}
-	if err := syscall.Fstat(fd, &st); err != nil {
-		syscall.Close(fd)
-		return nil, nil, 0, fs.ToErrno(err)
-	}
-
-	node := n.RootData.newNode(n.EmbeddedInode(), name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st))
-	lf := NewLoopbackFile(fd)
-
-	out.FromStat(&st)
-	return ch, lf, 0, 0
-}
-
-func (n *NFSNode) Symlink(ctx context.Context, target, name string, out *fs.EntryOut) (*Inode, syscall.Errno) {
-	p := filepath.Join(n.path(), name)
-	err := syscall.Symlink(target, p)
-	if err != nil {
-		return nil, fs.ToErrno(err)
-	}
-	n.preserveOwner(ctx, p)
-	st := syscall.Stat_t{}
-	if err := syscall.Lstat(p, &st); err != nil {
-		syscall.Unlink(p)
-		return nil, fs.ToErrno(err)
-	}
-	node := n.RootData.newNode(n.EmbeddedInode(), name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st))
-
-	out.Attr.FromStat(&st)
 	return ch, 0
 }
 
