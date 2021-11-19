@@ -1,7 +1,3 @@
-// Copyright 2019 the Go-FUSE Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package nfs
 
 import (
@@ -12,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -48,6 +45,11 @@ func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t, gen 
 	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen)
 }
 
+func (r *NFSRoot) setattr(self *fs.Inode, st *syscall.Stat_t) error {
+	return r.MetaStore.Setattr(self.StableAttr().Ino, st)
+}
+
+//TODO: return just pure stat?
 func (r *NFSRoot) getattr(self *fs.Inode) *Item {
 	return r.MetaStore.Lookup(self.StableAttr().Ino)
 }
@@ -149,14 +151,20 @@ func (n *NFSNode) path() string {
 }
 
 var _ = (fs.NodeGetattrer)((*NFSNode)(nil))
+var _ = (fs.FileHandle)((*NFScache)(nil))
 
 func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	//TODO: fh getattr
-	/*if f != nil {
-		return f.(FileGetattrer).Getattr(ctx, out)
-	}*/
-
 	log.Infof("getattr %s", n.Path(n.Root()))
+	if f != nil {
+		c := f.(*NFScache)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		out.FromStat(&c.st)
+
+		return fs.OK
+		//return f.(fs.FileGetattrer).Getattr(ctx, out)
+	}
 
 	self := n.EmbeddedInode()
 	i := n.RootData.getattr(self)
@@ -166,6 +174,33 @@ func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOu
 	}
 	out.FromStat(&i.Stat)
 	return fs.OK
+}
+
+var _ = (fs.NodeReleaser)((*NFSNode)(nil))
+
+func (n *NFSNode) Release(ctx context.Context, f fs.FileHandle) syscall.Errno {
+	self := n.EmbeddedInode()
+	c := f.(*NFScache)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fd != -1 {
+		//TODO cache time
+		log.Infof("release  %s, %v", n.Path(n.Root()), c.st)
+		if c.write {
+			c.st.Mtim.Sec = time.Now().Unix()
+			c.st.Ctim.Sec = time.Now().Unix()
+		}
+
+		if c.read {
+			c.st.Atim.Sec = time.Now().Unix()
+		}
+
+		n.RootData.setattr(self, &c.st)
+		err := syscall.Close(c.fd)
+		c.fd = -1
+		return fs.ToErrno(err)
+	}
+	return syscall.EBADF
 }
 
 var _ = (fs.NodeLookuper)((*NFSNode)(nil))
@@ -188,7 +223,7 @@ var _ = (fs.NodeCreater)((*NFSNode)(nil))
 
 func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
 	log.Infof("create %s/%s, %o", n.Path(n.Root()), name, mode)
-	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE}
+	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE, Nlink: 1}
 
 	pr := n.EmbeddedInode()
 	ch, err := n.newChild(ctx, pr, name, &st)
@@ -203,7 +238,7 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 		return nil, nil, 0, fs.ToErrno(err)
 	}
 
-	lf := fs.NewLoopbackFile(fd)
+	lf := NewNFSCache(fd, &st)
 	out.FromStat(&st)
 	return ch, lf, 0, 0
 }
@@ -239,7 +274,7 @@ var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	log.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
-	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE}
+	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE, Nlink: 1}
 	pr := n.EmbeddedInode()
 	ch, err := n.newChild(ctx, pr, name, &st)
 	if err != nil {
@@ -314,7 +349,22 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 }
 
 func (n *NFSNode) cachePath(self *fs.Inode) string {
+	//TODO: split caches, prevent large_dir perf regression
 	return filepath.Join(n.RootData.Path, strconv.FormatUint(self.StableAttr().Ino, 10))
+}
+
+var _ = (fs.NodeOpener)((*NFSNode)(nil))
+
+func (n *NFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	flags = flags &^ syscall.O_APPEND
+	p := n.cachePath(n.EmbeddedInode())
+	f, err := syscall.Open(p, int(flags), 0)
+	if err != nil {
+		return nil, 0, fs.ToErrno(err)
+	}
+	i := n.RootData.getattr(n.EmbeddedInode())
+	lf := NewNFSCache(f, &i.Stat)
+	return lf, 0, 0
 }
 
 /*var _ = (NodeStatfser)((*NFSNode)(nil))
@@ -332,7 +382,6 @@ var _ = (NodeReaddirer)((*NFSNode)(nil))
 var _ = (NodeMkdirer)((*NFSNode)(nil))
 var _ = (NodeMknoder)((*NFSNode)(nil))
 var _ = (NodeLinker)((*NFSNode)(nil))
-var _ = (NodeSymlinker)((*NFSNode)(nil))
 var _ = (NodeUnlinker)((*NFSNode)(nil))
 var _ = (NodeRmdirer)((*NFSNode)(nil))
 var _ = (NodeRenamer)((*NFSNode)(nil))

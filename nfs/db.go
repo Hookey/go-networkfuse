@@ -140,6 +140,18 @@ func (s *MetaStore) Rename(ino, pino2 uint64, name2 string) error {
 	})
 }
 
+func (s *MetaStore) Setattr(ino uint64, st *syscall.Stat_t) error {
+	return s.Store.UpdateMatching(&Item{}, badgerhold.Where("Ino").Eq(ino), func(record interface{}) error {
+		i, ok := record.(*Item)
+		if !ok {
+			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+		}
+
+		i.Stat = *st
+		return nil
+	})
+}
+
 type Item struct {
 	Ino  uint64 `badgerhold:"key"`
 	PIno uint64
