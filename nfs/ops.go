@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -186,14 +185,7 @@ func (n *NFSNode) Release(ctx context.Context, f fs.FileHandle) syscall.Errno {
 	if c.fd != -1 {
 		//TODO cache time
 		log.Infof("release  %s, %v", n.Path(n.Root()), c.st)
-		if c.write {
-			c.st.Mtim.Sec = time.Now().Unix()
-			c.st.Ctim.Sec = time.Now().Unix()
-		}
-
-		if c.read {
-			c.st.Atim.Sec = time.Now().Unix()
-		}
+		c.UpdateTime()
 
 		n.RootData.setattr(self, &c.st)
 		err := syscall.Close(c.fd)
@@ -365,6 +357,109 @@ func (n *NFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fus
 	i := n.RootData.getattr(n.EmbeddedInode())
 	lf := NewNFSCache(f, &i.Stat)
 	return lf, 0, 0
+}
+
+var _ = (fs.NodeFlusher)((*NFSNode)(nil))
+
+func (n *NFSNode) Flush(ctx context.Context, f fs.FileHandle) syscall.Errno {
+	self := n.EmbeddedInode()
+	c := f.(*NFScache)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.UpdateTime()
+	// Since Flush() may be called for each dup'd fd, we don't
+	// want to really close the file, we just want to flush. This
+	// is achieved by closing a dup'd fd.
+	if newFd, err := syscall.Dup(c.fd); err != nil {
+		return fs.ToErrno(err)
+	} else if err := syscall.Close(newFd); err != nil {
+		return fs.ToErrno(err)
+	}
+
+	n.RootData.setattr(self, &c.st)
+	return fs.OK
+}
+
+var _ = (fs.NodeFsyncer)((*NFSNode)(nil))
+
+func (n *NFSNode) Fsync(ctx context.Context, f fs.FileHandle, flags uint32) syscall.Errno {
+	self := n.EmbeddedInode()
+	c := f.(*NFScache)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.UpdateTime()
+	err := syscall.Fsync(c.fd)
+	if err == nil {
+		n.RootData.setattr(self, &c.st)
+	}
+
+	return fs.ToErrno(err)
+}
+
+var _ = (fs.NodeSetattrer)((*NFSNode)(nil))
+
+func (n *NFSNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) (errno syscall.Errno) {
+	var c *NFScache
+	self := n.EmbeddedInode()
+	if f == nil {
+		p := n.cachePath(n.EmbeddedInode())
+		fd, err := syscall.Open(p, syscall.O_RDWR, 0)
+		if err != nil {
+			return fs.ToErrno(err)
+		}
+		i := n.RootData.getattr(self)
+		c = NewNFSCache(fd, &i.Stat).(*NFScache)
+	} else {
+		c = f.(*NFScache)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	mode, ok := in.GetMode()
+	if ok {
+		c.st.Mode = mode
+	}
+
+	uid32, uok := in.GetUID()
+	if uok {
+		c.st.Uid = uid32
+	}
+
+	gid32, gok := in.GetGID()
+	if gok {
+		c.st.Gid = gid32
+	}
+
+	mtime, mok := in.GetMTime()
+	if mok {
+		c.st.Mtim.Sec = mtime.Unix()
+		c.st.Mtim.Nsec = int64(mtime.Nanosecond())
+	}
+
+	atime, aok := in.GetATime()
+	if aok {
+		c.st.Atim.Sec = atime.Unix()
+		c.st.Atim.Nsec = int64(atime.Nanosecond())
+	}
+
+	sz, sok := in.GetSize()
+	if sok {
+		c.st.Size = int64(sz)
+		c.st.Blocks = ((4095 + c.st.Size) >> 12) << 3
+		errno = fs.ToErrno(syscall.Ftruncate(c.fd, int64(sz)))
+		if errno != 0 {
+			return errno
+		}
+	}
+
+	if f == nil {
+		n.RootData.setattr(self, &c.st)
+	}
+
+	return fs.OK
 }
 
 /*var _ = (NodeStatfser)((*NFSNode)(nil))

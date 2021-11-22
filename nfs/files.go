@@ -3,6 +3,7 @@ package nfs
 import (
 	"context"
 	"sync"
+	"time"
 
 	//	"time"
 
@@ -57,66 +58,35 @@ func (f *NFScache) Write(ctx context.Context, data []byte, off int64) (uint32, s
 	return uint32(n), fs.ToErrno(err)
 }
 
-/*
-var _ = (fs.FileGetattrer)((*NFScache)(nil))
-var _ = (fs.FileReleaser)((*NFScache)(nil))
+func (f *NFScache) UpdateTime() {
+	if f.write || f.read {
+		t := time.Now()
 
-func (f *NFScache) Getattr(ctx context.Context, a *fuse.AttrOut) syscall.Errno {
-	//TODO: together with metadata stat
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	err := syscall.Fstat(f.fd, &f.st)
-	if err != nil {
-		return fs.ToErrno(err)
+		if f.write {
+			f.st.Mtim.Sec = t.Unix()
+			f.st.Mtim.Nsec = int64(t.Nanosecond())
+
+			f.st.Ctim.Sec = t.Unix()
+			f.st.Ctim.Sec = int64(t.Nanosecond())
+		}
+
+		if f.read {
+			f.st.Atim.Sec = t.Unix()
+			f.st.Atim.Sec = int64(t.Nanosecond())
+		}
+
+		f.read = false
+		f.write = false
 	}
-	a.FromStat(&f.st)
-
-	return fs.OK
 }
-
-func (f *NFScache) Release(ctx context.Context) syscall.Errno {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.fd != -1 {
-		err := syscall.Close(f.fd)
-		f.fd = -1
-		return fs.ToErrno(err)
-	}
-	return syscall.EBADF
-}*/
 
 /*
 var _ = (FileGetlker)((*nfsCache)(nil))
 var _ = (FileSetlker)((*nfsCache)(nil))
 var _ = (FileSetlkwer)((*nfsCache)(nil))
 var _ = (FileLseeker)((*nfsCache)(nil))
-var _ = (FileFlusher)((*nfsCache)(nil))
-var _ = (FileFsyncer)((*nfsCache)(nil))
 var _ = (FileSetattrer)((*nfsCache)(nil))
 var _ = (FileAllocater)((*nfsCache)(nil))
-
-func (f *nfsCache) Flush(ctx context.Context) syscall.Errno {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	// Since Flush() may be called for each dup'd fd, we don't
-	// want to really close the file, we just want to flush. This
-	// is achieved by closing a dup'd fd.
-	newFd, err := syscall.Dup(f.fd)
-
-	if err != nil {
-		return ToErrno(err)
-	}
-	err = syscall.Close(newFd)
-	return ToErrno(err)
-}
-
-func (f *nfsCache) Fsync(ctx context.Context, flags uint32) (errno syscall.Errno) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	r := ToErrno(syscall.Fsync(f.fd))
-
-	return r
-}
 
 const (
 	_OFD_GETLK  = 36
@@ -172,70 +142,6 @@ func (f *nfsCache) setLock(ctx context.Context, owner uint64, lk *fuse.FileLock,
 		}
 		return ToErrno(syscall.FcntlFlock(uintptr(f.fd), op, &flk))
 	}
-}
-
-func (f *nfsCache) Setattr(ctx context.Context, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
-	if errno := f.setAttr(ctx, in); errno != 0 {
-		return errno
-	}
-
-	return f.Getattr(ctx, out)
-}
-
-func (f *nfsCache) setAttr(ctx context.Context, in *fuse.SetAttrIn) syscall.Errno {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var errno syscall.Errno
-	if mode, ok := in.GetMode(); ok {
-		errno = ToErrno(syscall.Fchmod(f.fd, mode))
-		if errno != 0 {
-			return errno
-		}
-	}
-
-	uid32, uOk := in.GetUID()
-	gid32, gOk := in.GetGID()
-	if uOk || gOk {
-		uid := -1
-		gid := -1
-
-		if uOk {
-			uid = int(uid32)
-		}
-		if gOk {
-			gid = int(gid32)
-		}
-		errno = ToErrno(syscall.Fchown(f.fd, uid, gid))
-		if errno != 0 {
-			return errno
-		}
-	}
-
-	mtime, mok := in.GetMTime()
-	atime, aok := in.GetATime()
-
-	if mok || aok {
-		ap := &atime
-		mp := &mtime
-		if !aok {
-			ap = nil
-		}
-		if !mok {
-			mp = nil
-		}
-		errno = f.utimens(ap, mp)
-		if errno != 0 {
-			return errno
-		}
-	}
-
-	if sz, ok := in.GetSize(); ok {
-		errno = ToErrno(syscall.Ftruncate(f.fd, int64(sz)))
-		if errno != 0 {
-			return errno
-		}
-	}
-	return OK
 }
 
 func (f *nfsCache) Lseek(ctx context.Context, off uint64, whence uint32) (uint64, syscall.Errno) {
