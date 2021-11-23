@@ -69,12 +69,12 @@ func (f *NFScache) UpdateTime() {
 			f.st.Mtim.Nsec = int64(t.Nanosecond())
 
 			f.st.Ctim.Sec = t.Unix()
-			f.st.Ctim.Sec = int64(t.Nanosecond())
+			f.st.Ctim.Nsec = int64(t.Nanosecond())
 		}
 
 		if f.read {
 			f.st.Atim.Sec = t.Unix()
-			f.st.Atim.Sec = int64(t.Nanosecond())
+			f.st.Atim.Nsec = int64(t.Nanosecond())
 		}
 
 		f.read = false
