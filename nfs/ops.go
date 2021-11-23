@@ -48,13 +48,14 @@ func (r *NFSRoot) setattr(self *fs.Inode, st *syscall.Stat_t) error {
 	return r.MetaStore.Setattr(self.StableAttr().Ino, st)
 }
 
-//TODO: return just pure stat?
-func (r *NFSRoot) getattr(self *fs.Inode) *Item {
-	return r.MetaStore.Lookup(self.StableAttr().Ino)
+func (r *NFSRoot) getattr(self *fs.Inode) *syscall.Stat_t {
+	i := r.MetaStore.Lookup(self.StableAttr().Ino)
+	return &i.Stat
 }
 
-func (r *NFSRoot) readlink(self *fs.Inode) *Item {
-	return r.MetaStore.Lookup(self.StableAttr().Ino)
+func (r *NFSRoot) readlink(self *fs.Inode) string {
+	i := r.MetaStore.Lookup(self.StableAttr().Ino)
+	return i.Target
 }
 
 func (r *NFSRoot) lookup(parent *fs.Inode, name string) *Item {
@@ -157,7 +158,6 @@ var _ = (fs.NodeGetattrer)((*NFSNode)(nil))
 var _ = (fs.FileHandle)((*NFScache)(nil))
 
 func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	//TODO: fh getattr
 	log.Infof("getattr %s", n.Path(n.Root()))
 	if f != nil {
 		c := f.(*NFScache)
@@ -170,12 +170,12 @@ func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOu
 	}
 
 	self := n.EmbeddedInode()
-	i := n.RootData.getattr(self)
+	st := n.RootData.getattr(self)
 
-	if i.Ino == 0 {
+	if st.Ino == 0 {
 		return fs.ToErrno(os.ErrNotExist)
 	}
-	out.FromStat(&i.Stat)
+	out.FromStat(st)
 	return fs.OK
 }
 
@@ -220,6 +220,7 @@ var _ = (fs.NodeCreater)((*NFSNode)(nil))
 func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
 	log.Infof("create %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE, Nlink: 1}
+	n.preserveOwner(ctx, &st)
 
 	pr := n.EmbeddedInode()
 	ch, err := n.newChild(ctx, pr, name, &st, "")
@@ -255,22 +256,25 @@ func (n *NFSNode) newChild(ctx context.Context, parent *fs.Inode, name string, s
 
 // preserveOwner sets uid and gid of `path` according to the caller information
 // in `ctx`.
-/*func (n *NFSNode) preserveOwner(ctx context.Context, path string) error {
-	if os.Getuid() != 0 {
+func (n *NFSNode) preserveOwner(ctx context.Context, st *syscall.Stat_t) {
+	/*if os.Getuid() != 0 {
 		return nil
-	}
+	}*/
 	caller, ok := fuse.FromContext(ctx)
 	if !ok {
-		return nil
+		return
 	}
-	return syscall.Lchown(path, int(caller.Uid), int(caller.Gid))
-}*/
+
+	st.Uid = caller.Uid
+	st.Gid = caller.Gid
+}
 
 var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	log.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE, Nlink: 1}
+	n.preserveOwner(ctx, &st)
 	pr := n.EmbeddedInode()
 	ch, err := n.newChild(ctx, pr, name, &st, "")
 	if err != nil {
@@ -358,8 +362,8 @@ func (n *NFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fus
 	if err != nil {
 		return nil, 0, fs.ToErrno(err)
 	}
-	i := n.RootData.getattr(n.EmbeddedInode())
-	lf := NewNFSCache(f, &i.Stat)
+	st := n.RootData.getattr(n.EmbeddedInode())
+	lf := NewNFSCache(f, st)
 	return lf, 0, 0
 }
 
@@ -413,8 +417,8 @@ func (n *NFSNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttr
 		if err != nil {
 			return fs.ToErrno(err)
 		}
-		i := n.RootData.getattr(self)
-		c = NewNFSCache(fd, &i.Stat).(*NFScache)
+		st := n.RootData.getattr(self)
+		c = NewNFSCache(fd, st).(*NFScache)
 	} else {
 		c = f.(*NFScache)
 	}
@@ -471,8 +475,8 @@ var _ = (fs.NodeReadlinker)((*NFSNode)(nil))
 
 func (n *NFSNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
 	self := n.EmbeddedInode()
-	i := n.RootData.readlink(self)
-	return []byte(i.Target), 0
+	target := n.RootData.readlink(self)
+	return []byte(target), 0
 }
 
 var _ = (fs.NodeSymlinker)((*NFSNode)(nil))
@@ -480,6 +484,7 @@ var _ = (fs.NodeSymlinker)((*NFSNode)(nil))
 func (n *NFSNode) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	pr := n.EmbeddedInode()
 	st := syscall.Stat_t{Mode: 0755 | syscall.S_IFLNK, Size: int64(len(target)), Blksize: syscall.S_BLKSIZE, Nlink: 1}
+	n.preserveOwner(ctx, &st)
 
 	ch, err := n.newChild(ctx, pr, name, &st, target)
 	if err != nil {
@@ -496,18 +501,11 @@ var _ = (NodeGetxattrer)((*NFSNode)(nil))
 var _ = (NodeSetxattrer)((*NFSNode)(nil))
 var _ = (NodeRemovexattrer)((*NFSNode)(nil))
 var _ = (NodeListxattrer)((*NFSNode)(nil))
-var _ = (NodeReadlinker)((*NFSNode)(nil))
-var _ = (NodeOpener)((*NFSNode)(nil))
 var _ = (NodeCopyFileRanger)((*NFSNode)(nil))
-var _ = (NodeLookuper)((*NFSNode)(nil))
 var _ = (NodeOpendirer)((*NFSNode)(nil))
 var _ = (NodeReaddirer)((*NFSNode)(nil))
-var _ = (NodeMkdirer)((*NFSNode)(nil))
 var _ = (NodeMknoder)((*NFSNode)(nil))
 var _ = (NodeLinker)((*NFSNode)(nil))
-var _ = (NodeUnlinker)((*NFSNode)(nil))
-var _ = (NodeRmdirer)((*NFSNode)(nil))
-var _ = (NodeRenamer)((*NFSNode)(nil))
 
 func (n *NFSNode) Statfs(ctx context.Context, out *fs.StatfsOut) syscall.Errno {
 	s := syscall.Statfs_t{}
@@ -557,22 +555,6 @@ func (n *NFSNode) Link(ctx context.Context, target InodeEmbedder, name string, o
 
 	out.Attr.FromStat(&st)
 	return ch, 0
-}
-
-func (n *NFSNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
-	p := n.path()
-
-	for l := 256; ; l *= 2 {
-		buf := make([]byte, l)
-		sz, err := syscall.Readlink(p, buf)
-		if err != nil {
-			return nil, fs.ToErrno(err)
-		}
-
-		if sz < len(buf) {
-			return buf[:sz], 0
-		}
-	}
 }
 
 func (n *NFSNode) Opendir(ctx context.Context) syscall.Errno {
