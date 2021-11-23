@@ -3,7 +3,6 @@ package nfs
 import (
 	"context"
 	"sync"
-	"time"
 
 	//	"time"
 
@@ -62,19 +61,15 @@ func (f *NFScache) Write(ctx context.Context, data []byte, off int64) (uint32, s
 
 func (f *NFScache) UpdateTime() {
 	if f.write || f.read {
-		t := time.Now()
+		t := nowTimespec()
 
 		if f.write {
-			f.st.Mtim.Sec = t.Unix()
-			f.st.Mtim.Nsec = int64(t.Nanosecond())
-
-			f.st.Ctim.Sec = t.Unix()
-			f.st.Ctim.Nsec = int64(t.Nanosecond())
+			f.st.Mtim = t
+			f.st.Ctim = t
 		}
 
 		if f.read {
-			f.st.Atim.Sec = t.Unix()
-			f.st.Atim.Nsec = int64(t.Nanosecond())
+			f.st.Atim = t
 		}
 
 		f.read = false

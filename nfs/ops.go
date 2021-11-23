@@ -284,6 +284,8 @@ func (n *NFSNode) preserveOwner(ctx context.Context, st *syscall.Stat_t) {
 
 	st.Uid = caller.Uid
 	st.Gid = caller.Gid
+	t := nowTimespec()
+	st.Atim, st.Mtim, st.Ctim = t, t, t
 }
 
 var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
