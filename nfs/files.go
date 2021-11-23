@@ -9,6 +9,8 @@ import (
 
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
@@ -80,11 +82,19 @@ func (f *NFScache) UpdateTime() {
 	}
 }
 
+var _ = (fs.FileLseeker)((*NFScache)(nil))
+
+func (f *NFScache) Lseek(ctx context.Context, off uint64, whence uint32) (uint64, syscall.Errno) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, err := unix.Seek(f.fd, int64(off), int(whence))
+	return uint64(n), fs.ToErrno(err)
+}
+
 /*
 var _ = (FileGetlker)((*nfsCache)(nil))
 var _ = (FileSetlker)((*nfsCache)(nil))
 var _ = (FileSetlkwer)((*nfsCache)(nil))
-var _ = (FileLseeker)((*nfsCache)(nil))
 var _ = (FileSetattrer)((*nfsCache)(nil))
 var _ = (FileAllocater)((*nfsCache)(nil))
 
@@ -144,10 +154,4 @@ func (f *nfsCache) setLock(ctx context.Context, owner uint64, lk *fuse.FileLock,
 	}
 }
 
-func (f *nfsCache) Lseek(ctx context.Context, off uint64, whence uint32) (uint64, syscall.Errno) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n, err := unix.Seek(f.fd, int64(off), int(whence))
-	return uint64(n), ToErrno(err)
-}
 */

@@ -28,8 +28,8 @@ func (s *MetaStore) Close() {
 	s.Store.Close()
 }
 
-func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uint64) error {
-	i := Item{Ino: st.Ino, PIno: pino, Name: name, Stat: *st, Gen: gen}
+func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uint64, target string) error {
+	i := Item{Ino: st.Ino, PIno: pino, Name: name, Stat: *st, Gen: gen, Target: target}
 	return s.Store.Upsert(st.Ino, i)
 }
 
@@ -158,8 +158,9 @@ type Item struct {
 	Gen  uint64
 	//Category string `badgerholdIndex:"Category"`
 	//Created  time.Time
-	Stat syscall.Stat_t
-	Name string
+	Stat   syscall.Stat_t
+	Name   string
+	Target string
 	//Mtime syscall.Timespec
 	//Mode  uint32
 	//Uid   int

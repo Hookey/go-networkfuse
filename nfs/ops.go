@@ -39,9 +39,9 @@ type NFSRoot struct {
 	NewNode func(rootData *NFSRoot, parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder
 }
 
-func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t, gen uint64) error {
+func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t, gen uint64, target string) error {
 	log.Infof("ino %v, gen %v, pino %v, name %v", st.Ino, gen, parent.StableAttr().Ino, name)
-	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen)
+	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen, target)
 }
 
 func (r *NFSRoot) setattr(self *fs.Inode, st *syscall.Stat_t) error {
@@ -50,6 +50,10 @@ func (r *NFSRoot) setattr(self *fs.Inode, st *syscall.Stat_t) error {
 
 //TODO: return just pure stat?
 func (r *NFSRoot) getattr(self *fs.Inode) *Item {
+	return r.MetaStore.Lookup(self.StableAttr().Ino)
+}
+
+func (r *NFSRoot) readlink(self *fs.Inode) *Item {
 	return r.MetaStore.Lookup(self.StableAttr().Ino)
 }
 
@@ -121,7 +125,7 @@ func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
 	if root.nextNodeId == 1 {
 		var gen uint64
 		st.Ino, gen = root.applyIno()
-		if err := root.MetaStore.Insert(RootBin, "/", &st, gen); err != nil {
+		if err := root.MetaStore.Insert(RootBin, "/", &st, gen, ""); err != nil {
 			return nil, err
 		}
 	}
@@ -218,7 +222,7 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE, Nlink: 1}
 
 	pr := n.EmbeddedInode()
-	ch, err := n.newChild(ctx, pr, name, &st)
+	ch, err := n.newChild(ctx, pr, name, &st, "")
 	if err != nil {
 		return nil, nil, 0, fs.ToErrno(err)
 	}
@@ -235,10 +239,10 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 	return ch, lf, 0, 0
 }
 
-func (n *NFSNode) newChild(ctx context.Context, parent *fs.Inode, name string, st *syscall.Stat_t) (*fs.Inode, error) {
+func (n *NFSNode) newChild(ctx context.Context, parent *fs.Inode, name string, st *syscall.Stat_t, target string) (*fs.Inode, error) {
 	var gen uint64
 	st.Ino, gen = n.RootData.applyIno()
-	err := n.RootData.insert(parent, name, st, gen)
+	err := n.RootData.insert(parent, name, st, gen, target)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +272,7 @@ func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 	log.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE, Nlink: 1}
 	pr := n.EmbeddedInode()
-	ch, err := n.newChild(ctx, pr, name, &st)
+	ch, err := n.newChild(ctx, pr, name, &st, "")
 	if err != nil {
 		return nil, fs.ToErrno(err)
 	}
@@ -458,8 +462,32 @@ func (n *NFSNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttr
 	if f == nil {
 		n.RootData.setattr(self, &c.st)
 	}
+	out.FromStat(&c.st)
 
 	return fs.OK
+}
+
+var _ = (fs.NodeReadlinker)((*NFSNode)(nil))
+
+func (n *NFSNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	self := n.EmbeddedInode()
+	i := n.RootData.readlink(self)
+	return []byte(i.Target), 0
+}
+
+var _ = (fs.NodeSymlinker)((*NFSNode)(nil))
+
+func (n *NFSNode) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	pr := n.EmbeddedInode()
+	st := syscall.Stat_t{Mode: 0755 | syscall.S_IFLNK, Size: int64(len(target)), Blksize: syscall.S_BLKSIZE, Nlink: 1}
+
+	ch, err := n.newChild(ctx, pr, name, &st, target)
+	if err != nil {
+		return nil, fs.ToErrno(err)
+	}
+
+	out.Attr.FromStat(&st)
+	return ch, 0
 }
 
 /*var _ = (NodeStatfser)((*NFSNode)(nil))
@@ -547,17 +575,6 @@ func (n *NFSNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
 	}
 }
 
-func (n *NFSNode) Open(ctx context.Context, flags uint32) (fh FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	flags = flags &^ syscall.O_APPEND
-	p := n.path()
-	f, err := syscall.Open(p, int(flags), 0)
-	if err != nil {
-		return nil, 0, fs.ToErrno(err)
-	}
-	lf := NewLoopbackFile(f)
-	return lf, 0, 0
-}
-
 func (n *NFSNode) Opendir(ctx context.Context) syscall.Errno {
 	fd, err := syscall.Open(n.path(), syscall.O_DIRECTORY, 0755)
 	if err != nil {
@@ -570,98 +587,4 @@ func (n *NFSNode) Opendir(ctx context.Context) syscall.Errno {
 func (n *NFSNode) Readdir(ctx context.Context) (DirStream, syscall.Errno) {
 	return NewLoopbackDirStream(n.path())
 }
-
-func (n *NFSNode) Getattr(ctx context.Context, f FileHandle, out *fs.AttrOut) syscall.Errno {
-	if f != nil {
-		return f.(FileGetattrer).Getattr(ctx, out)
-	}
-
-	p := n.path()
-
-	var err error
-	st := syscall.Stat_t{}
-	if &n.Inode == n.Root() {
-		err = syscall.Stat(p, &st)
-	} else {
-		err = syscall.Lstat(p, &st)
-	}
-
-	if err != nil {
-		return fs.ToErrno(err)
-	}
-	out.FromStat(&st)
-	return fs.OK
-}
-
-var _ = (NodeSetattrer)((*NFSNode)(nil))
-
-func (n *NFSNode) Setattr(ctx context.Context, f FileHandle, in *fs.SetAttrIn, out *fs.AttrOut) syscall.Errno {
-	p := n.path()
-	fsa, ok := f.(FileSetattrer)
-	if ok && fsa != nil {
-		fsa.Setattr(ctx, in, out)
-	} else {
-		if m, ok := in.GetMode(); ok {
-			if err := syscall.Chmod(p, m); err != nil {
-				return fs.ToErrno(err)
-			}
-		}
-
-		uid, uok := in.GetUID()
-		gid, gok := in.GetGID()
-		if uok || gok {
-			suid := -1
-			sgid := -1
-			if uok {
-				suid = int(uid)
-			}
-			if gok {
-				sgid = int(gid)
-			}
-			if err := syscall.Chown(p, suid, sgid); err != nil {
-				return fs.ToErrno(err)
-			}
-		}
-
-		mtime, mok := in.GetMTime()
-		atime, aok := in.GetATime()
-
-		if mok || aok {
-
-			ap := &atime
-			mp := &mtime
-			if !aok {
-				ap = nil
-			}
-			if !mok {
-				mp = nil
-			}
-			var ts [2]syscall.Timespec
-			ts[0] = fs.UtimeToTimespec(ap)
-			ts[1] = fs.UtimeToTimespec(mp)
-
-			if err := syscall.UtimesNano(p, ts[:]); err != nil {
-				return fs.ToErrno(err)
-			}
-		}
-
-		if sz, ok := in.GetSize(); ok {
-			if err := syscall.Truncate(p, int64(sz)); err != nil {
-				return fs.ToErrno(err)
-			}
-		}
-	}
-
-	fga, ok := f.(FileGetattrer)
-	if ok && fga != nil {
-		fga.Getattr(ctx, out)
-	} else {
-		st := syscall.Stat_t{}
-		err := syscall.Lstat(p, &st)
-		if err != nil {
-			return fs.ToErrno(err)
-		}
-		out.FromStat(&st)
-	}
-	return fs.OK
-}*/
+*/
