@@ -53,6 +53,23 @@ func (r *NFSRoot) getattr(self *fs.Inode) *syscall.Stat_t {
 	return &i.Stat
 }
 
+// readdir lookups one of parent, self, children
+func (r *NFSRoot) readdir(self *fs.Inode) []*Item {
+	var i *Item
+	_, pr := self.Parent()
+	if pr != nil {
+		i = r.MetaStore.Lookup(pr.StableAttr().Ino)
+	} else {
+		i = r.MetaStore.Lookup(RootBin)
+	}
+	i.Name = ".."
+
+	is := r.MetaStore.ReadDir(self.StableAttr().Ino)
+	is[0].Name = "."
+	is = append(is, i)
+	return is
+}
+
 func (r *NFSRoot) readlink(self *fs.Inode) string {
 	i := r.MetaStore.Lookup(self.StableAttr().Ino)
 	return i.Target
@@ -495,6 +512,19 @@ func (n *NFSNode) Symlink(ctx context.Context, target, name string, out *fuse.En
 	return ch, 0
 }
 
+var _ = (fs.NodeOpendirer)((*NFSNode)(nil))
+
+func (n *NFSNode) Opendir(ctx context.Context) syscall.Errno {
+	//TODO: May use this to trigger sync dir content
+	return fs.OK
+}
+
+var _ = (fs.NodeReaddirer)((*NFSNode)(nil))
+
+func (n *NFSNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	return NewNFSDirStream(n.EmbeddedInode(), n.RootData.readdir)
+}
+
 /*var _ = (NodeStatfser)((*NFSNode)(nil))
 var _ = (NodeGetattrer)((*NFSNode)(nil))
 var _ = (NodeGetxattrer)((*NFSNode)(nil))
@@ -502,8 +532,6 @@ var _ = (NodeSetxattrer)((*NFSNode)(nil))
 var _ = (NodeRemovexattrer)((*NFSNode)(nil))
 var _ = (NodeListxattrer)((*NFSNode)(nil))
 var _ = (NodeCopyFileRanger)((*NFSNode)(nil))
-var _ = (NodeOpendirer)((*NFSNode)(nil))
-var _ = (NodeReaddirer)((*NFSNode)(nil))
 var _ = (NodeMknoder)((*NFSNode)(nil))
 var _ = (NodeLinker)((*NFSNode)(nil))
 
@@ -555,18 +583,5 @@ func (n *NFSNode) Link(ctx context.Context, target InodeEmbedder, name string, o
 
 	out.Attr.FromStat(&st)
 	return ch, 0
-}
-
-func (n *NFSNode) Opendir(ctx context.Context) syscall.Errno {
-	fd, err := syscall.Open(n.path(), syscall.O_DIRECTORY, 0755)
-	if err != nil {
-		return fs.ToErrno(err)
-	}
-	syscall.Close(fd)
-	return fs.OK
-}
-
-func (n *NFSNode) Readdir(ctx context.Context) (DirStream, syscall.Errno) {
-	return NewLoopbackDirStream(n.path())
 }
 */

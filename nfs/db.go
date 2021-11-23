@@ -97,6 +97,12 @@ func (s *MetaStore) IsEmptyDir(ino uint64) bool {
 	return count == 0 && err == nil
 }
 
+func (s *MetaStore) ReadDir(ino uint64) []*Item {
+	is := []*Item{}
+	s.Store.Find(&is, badgerhold.Where("Ino").Eq(ino).Or(badgerhold.Where("PIno").Eq(ino)))
+	return is
+}
+
 // Replace is a variant of rename from ino to ino2
 func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
 	return s.Store.Badger().Update(func(tx *badger.Txn) error {
