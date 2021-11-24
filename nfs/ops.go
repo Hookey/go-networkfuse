@@ -527,6 +527,37 @@ func (n *NFSNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return NewNFSDirStream(n.EmbeddedInode(), n.RootData.readdir)
 }
 
+var _ = (fs.NodeMknoder)((*NFSNode)(nil))
+
+func (n *NFSNode) Mknod(ctx context.Context, name string, mode, rdev uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	/*
+	 * Open O_CREAT | O_EXCL over NFSv4 to FUSE will trigger this behavior.
+	 * Just give owner permission to read/write.
+	 * https://github.com/trapexit/mergerfs/issues/343
+	 */
+	if mode&0777 == 0 {
+		mode |= 0700
+	}
+
+	st := syscall.Stat_t{Mode: mode, Rdev: uint64(rdev), Blksize: syscall.S_BLKSIZE, Nlink: 1}
+	n.preserveOwner(ctx, &st)
+	pr := n.EmbeddedInode()
+	ch, err := n.newChild(ctx, pr, name, &st, "")
+	if err != nil {
+		return nil, fs.ToErrno(err)
+	}
+
+	err = syscall.Mknod(n.cachePath(ch), mode, int(rdev))
+	if err != nil {
+		n.RootData.delete(ch)
+		return nil, fs.ToErrno(err)
+	}
+
+	out.Attr.FromStat(&st)
+
+	return ch, 0
+}
+
 /*var _ = (NodeStatfser)((*NFSNode)(nil))
 var _ = (NodeGetattrer)((*NFSNode)(nil))
 var _ = (NodeGetxattrer)((*NFSNode)(nil))
@@ -534,7 +565,6 @@ var _ = (NodeSetxattrer)((*NFSNode)(nil))
 var _ = (NodeRemovexattrer)((*NFSNode)(nil))
 var _ = (NodeListxattrer)((*NFSNode)(nil))
 var _ = (NodeCopyFileRanger)((*NFSNode)(nil))
-var _ = (NodeMknoder)((*NFSNode)(nil))
 var _ = (NodeLinker)((*NFSNode)(nil))
 
 func (n *NFSNode) Statfs(ctx context.Context, out *fs.StatfsOut) syscall.Errno {
@@ -545,27 +575,6 @@ func (n *NFSNode) Statfs(ctx context.Context, out *fs.StatfsOut) syscall.Errno {
 	}
 	out.FromStatfsT(&s)
 	return fs.OK
-}
-
-func (n *NFSNode) Mknod(ctx context.Context, name string, mode, rdev uint32, out *fs.EntryOut) (*Inode, syscall.Errno) {
-	p := filepath.Join(n.path(), name)
-	err := syscall.Mknod(p, mode, int(rdev))
-	if err != nil {
-		return nil, fs.ToErrno(err)
-	}
-	n.preserveOwner(ctx, p)
-	st := syscall.Stat_t{}
-	if err := syscall.Lstat(p, &st); err != nil {
-		syscall.Rmdir(p)
-		return nil, fs.ToErrno(err)
-	}
-
-	out.Attr.FromStat(&st)
-
-	node := n.RootData.newNode(n.EmbeddedInode(), name, &st)
-	ch := n.NewInode(ctx, node, idFromStat(&st))
-
-	return ch, 0
 }
 
 func (n *NFSNode) Link(ctx context.Context, target InodeEmbedder, name string, out *fs.EntryOut) (*Inode, syscall.Errno) {
