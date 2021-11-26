@@ -50,7 +50,7 @@ func (ds *NFSDirStream) Next() (fuse.DirEntry, syscall.Errno) {
 	result := fuse.DirEntry{
 		Ino:  i.Ino,
 		Mode: i.Stat.Mode,
-		Name: i.Name,
+		Name: i.Link.Name,
 	}
 	ds.offset++
 

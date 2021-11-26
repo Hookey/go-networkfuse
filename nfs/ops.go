@@ -62,10 +62,10 @@ func (r *NFSRoot) readdir(self *fs.Inode) []*Item {
 	} else {
 		i = r.MetaStore.Lookup(RootBin)
 	}
-	i.Name = ".."
+	i.Link.Name = ".."
 
 	is := r.MetaStore.ReadDir(self.StableAttr().Ino)
-	is[0].Name = "."
+	is[0].Link.Name = "."
 	is = append(is, i)
 	return is
 }
@@ -358,7 +358,7 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 			syscall.Unlink(n.cachePath(ch2))
 		}
 
-		//TODO update stat
+		//TODO update stat, ctime...
 		err := n.RootData.replace(ch1, ch2, pr2, newName)
 		return fs.ToErrno(err)
 	} else {
