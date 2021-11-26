@@ -83,10 +83,6 @@ func (r *NFSRoot) delete(self *fs.Inode) error {
 	return r.MetaStore.SoftDelete(self.StableAttr().Ino)
 }
 
-func (r *NFSRoot) deleteDentry(parent *fs.Inode, name string) error {
-	return r.MetaStore.DeleteDentry(parent.StableAttr().Ino, name)
-}
-
 func (r *NFSRoot) applyIno() (uint64, uint64) {
 	if ino, gen := r.MetaStore.ApplyIno(); ino > 0 {
 		return ino, gen + 1

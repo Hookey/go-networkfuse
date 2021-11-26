@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"syscall"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/dgraph-io/badger/v3"
 	"github.com/timshannon/badgerhold/v4"
 )
 
 type MetaStore struct {
 	Store *badgerhold.Store
+
+	// hash function is used to index a link, boost up lookup performance.
+	hash func(s string) uint64
 }
 
 func NewMetaStore(db string) (*MetaStore, error) {
@@ -21,15 +25,20 @@ func NewMetaStore(db string) (*MetaStore, error) {
 		return nil, err
 	}
 
-	return &MetaStore{store}, nil
+	return &MetaStore{Store: store, hash: xxhash.Sum64String}, nil
 }
 
 func (s *MetaStore) Close() {
 	s.Store.Close()
 }
 
+func (s *MetaStore) hashLink(pino uint64, name string) uint64 {
+	// Add "/" to prevent hash collision, for instance, ("12", 3), ("1", 23).
+	return s.hash(fmt.Sprint(name+"/", pino))
+}
+
 func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uint64, target string) error {
-	i := Item{Ino: st.Ino, Link: Link_t{Pino: pino, Name: name}, Stat: *st, Gen: gen, Target: target}
+	i := Item{Ino: st.Ino, Link: Link_t{Pino: pino, Name: name}, Hash: s.hashLink(pino, name), Stat: *st, Gen: gen, Target: target}
 	return s.Store.Upsert(st.Ino, i)
 }
 
@@ -41,18 +50,17 @@ func (s *MetaStore) Lookup(ino uint64) *Item {
 
 func (s *MetaStore) LookupDentry(pino uint64, name string) *Item {
 	var i Item
-	s.Store.FindOne(&i, badgerhold.Where("Link.Pino").Eq(pino).And("Link.Name").Eq(name))
+	h := s.hashLink(pino, name)
+	//s.Store.FindOne(&i, badgerhold.Where("Hash").Eq(h).Index("hashIdx"))
+	s.Store.ForEach(badgerhold.Where("Hash").Eq(h).Index("hashIdx"), func(record *Item) error {
+		if record.Link.Pino == pino && record.Link.Name == name {
+			i = *record
+			return fmt.Errorf("Got it!")
+		}
+
+		return nil
+	})
 	return &i
-}
-
-func (s *MetaStore) DeleteDentry(pino uint64, name string) error {
-	err := s.Store.DeleteMatching(&Item{}, badgerhold.Where("Link.Pino").Eq(pino).And("Name").Eq(name))
-	return err
-}
-
-func (s *MetaStore) Delete(ino uint64) error {
-	err := s.Store.Delete(ino, &Item{})
-	return err
 }
 
 // SoftDelete moves certain inode to conceptual recycle bin(pino=0)
@@ -103,6 +111,18 @@ func (s *MetaStore) ReadDir(ino uint64) []*Item {
 	return is
 }
 
+func (s *MetaStore) DeleteDentry(pino uint64, name string) error {
+	lnk := Link_t{Pino: pino, Name: name}
+	//TODO: hardlink feature
+	err := s.Store.DeleteMatching(&Item{}, badgerhold.Where("Link").Eq(lnk))
+	return err
+}
+
+func (s *MetaStore) Delete(ino uint64) error {
+	err := s.Store.Delete(ino, &Item{})
+	return err
+}
+
 // Replace is a variant of rename from ino to ino2
 func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
 	return s.Store.Badger().Update(func(tx *badger.Txn) error {
@@ -124,9 +144,9 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
 				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 			}
 
-			//log.Infof("apply %v", i)
 			i.Link.Pino = pino2
 			i.Link.Name = name2
+			i.Hash = s.hashLink(pino2, name2)
 			return nil
 		})
 	})
@@ -139,9 +159,9 @@ func (s *MetaStore) Rename(ino, pino2 uint64, name2 string) error {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
-		//log.Infof("apply %v", i)
 		i.Link.Pino = pino2
 		i.Link.Name = name2
+		i.Hash = s.hashLink(pino2, name2)
 		return nil
 	})
 }
@@ -164,17 +184,10 @@ type Link_t struct {
 }
 
 type Item struct {
-	Ino  uint64 `badgerhold:"key"`
-	Link Link_t
-	//Pino uint64
-	Gen uint64
-	//Category string `badgerholdIndex:"Category"`
-	//Created  time.Time
-	Stat syscall.Stat_t
-	//Name   string
+	Ino    uint64 `badgerhold:"key"`
+	Gen    uint64
+	Hash   uint64 `badgerholdIndex:"hashIdx"`
+	Link   Link_t
+	Stat   syscall.Stat_t
 	Target string
-	//Mtime syscall.Timespec
-	//Mode  uint32
-	//Uid   int
-	//Gid   int
 }
