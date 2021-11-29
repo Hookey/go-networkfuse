@@ -3,7 +3,7 @@ package nfs
 import "math"
 
 const (
-	RecycleBin = 0
+	RecycleBin = math.MaxUint64 - 1
 	TempBin    = math.MaxUint64 - 1
 	RootBin    = math.MaxUint64
 )

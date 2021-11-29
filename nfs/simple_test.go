@@ -136,8 +136,6 @@ func TestBasic(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	time.Sleep(time.Second)
-
 	fi, err := os.Lstat(fn)
 	if err != nil {
 		t.Fatalf("Lstat: %v", err)
