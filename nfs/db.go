@@ -52,6 +52,7 @@ func (s *MetaStore) LookupDentry(pino uint64, name string) *Item {
 	var i Item
 	h := s.hashLink(pino, name)
 	//s.Store.FindOne(&i, badgerhold.Where("Hash").Eq(h).Index("hashIdx"))
+	//TODO: subquery
 	s.Store.ForEach(badgerhold.Where("Hash").Eq(h).Index("hashIdx"), func(record *Item) error {
 		if record.Link.Pino == pino && record.Link.Name == name {
 			i = *record

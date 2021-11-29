@@ -21,29 +21,6 @@ import (
 
 var log = logging.Logger("main")
 
-/*type HelloRoot struct {
-	fs.Inode
-}
-
-func (r *HelloRoot) OnAdd(ctx context.Context) {
-	ch := r.NewPersistentInode(
-		ctx, &fs.MemRegularFile{
-			Data: []byte("file.txt"),
-			Attr: fuse.Attr{
-				Mode: 0644,
-			},
-		}, fs.StableAttr{Ino: 2})
-	r.AddChild("file.txt", ch, false)
-}
-
-func (r *HelloRoot) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = 0755
-	return 0
-}
-
-var _ = (fs.NodeGetattrer)((*HelloRoot)(nil))
-var _ = (fs.NodeOnAdder)((*HelloRoot)(nil))*/
-
 // SetupDefaultLoggingConfig sets up a standard logging configuration.
 func SetupDefaultLoggingConfig(file string) error {
 	c := logging.Config{
@@ -101,6 +78,9 @@ func main() {
 		os.Exit(2)
 	}
 
+	orig := flag.Arg(1)
+	mnt := flag.Arg(0)
+
 	if err := SetupDefaultLoggingConfig(*logFile); err != nil {
 		log.Fatal(err)
 	}
@@ -119,7 +99,6 @@ func main() {
 
 	defer store.Close()
 
-	orig := flag.Arg(1)
 	//TODO: root.embed().stableattr.ino is set to 0, should be 1 instead. Need to wait go-fuse fix
 	// https://github.com/hanwen/go-fuse/issues/399
 	nfsRoot, err := nfs.NewNFSRoot(orig, store)
@@ -129,7 +108,7 @@ func main() {
 
 	opts := &fuse.Options{}
 	opts.Debug = *debug
-	server, err := fuse.Mount(flag.Arg(0), nfsRoot, opts)
+	server, err := fuse.Mount(mnt, nfsRoot, opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}

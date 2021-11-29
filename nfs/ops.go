@@ -14,7 +14,7 @@ import (
 	logging "github.com/ipfs/go-log/v2"
 )
 
-var log = logging.Logger("nfs")
+var logger = logging.Logger("nfs")
 
 // NFSRoot holds the parameters for creating a new network
 // filesystem. Network filesystem splits meta and data layer.
@@ -40,7 +40,7 @@ type NFSRoot struct {
 }
 
 func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t, gen uint64, target string) error {
-	log.Infof("ino %v, gen %v, pino %v, name %v", st.Ino, gen, parent.StableAttr().Ino, name)
+	logger.Infof("ino %v, gen %v, pino %v, name %v", st.Ino, gen, parent.StableAttr().Ino, name)
 	return r.MetaStore.Insert(parent.StableAttr().Ino, name, st, gen, target)
 }
 
@@ -135,7 +135,7 @@ func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
 
 	root.nextNodeId = store.NextAllocateIno()
 
-	log.Infof("next ino %v", root.nextNodeId)
+	logger.Infof("next ino %v", root.nextNodeId)
 	if root.nextNodeId == 1 {
 		var gen uint64
 		st.Ino, gen = root.applyIno()
@@ -171,7 +171,7 @@ var _ = (fs.NodeGetattrer)((*NFSNode)(nil))
 var _ = (fs.FileHandle)((*NFScache)(nil))
 
 func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	log.Infof("getattr %s", n.Path(n.Root()))
+	logger.Infof("getattr %s", n.Path(n.Root()))
 	if f != nil {
 		c := f.(*NFScache)
 		c.mu.Lock()
@@ -201,7 +201,7 @@ func (n *NFSNode) Release(ctx context.Context, f fs.FileHandle) syscall.Errno {
 	defer c.mu.Unlock()
 	if c.fd != -1 {
 		//TODO cache time
-		log.Infof("release  %s, %v", n.Path(n.Root()), c.st)
+		logger.Infof("release  %s, %v", n.Path(n.Root()), c.st)
 		c.UpdateTime()
 
 		n.RootData.setattr(self, &c.st)
@@ -216,7 +216,7 @@ var _ = (fs.NodeLookuper)((*NFSNode)(nil))
 
 func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	pr := n.EmbeddedInode()
-	log.Infof("lookup  %s/%s", n.Path(n.Root()), name)
+	logger.Infof("lookup  %s/%s", n.Path(n.Root()), name)
 	i := n.RootData.lookup(pr, name)
 	if i.Ino == 0 {
 		return nil, fs.ToErrno(os.ErrNotExist)
@@ -231,7 +231,7 @@ func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 var _ = (fs.NodeCreater)((*NFSNode)(nil))
 
 func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	log.Infof("create %s/%s, %o", n.Path(n.Root()), name, mode)
+	logger.Infof("create %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE, Nlink: 1}
 	n.preserveOwner(ctx, &st)
 
@@ -287,7 +287,7 @@ func (n *NFSNode) preserveOwner(ctx context.Context, st *syscall.Stat_t) {
 var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	log.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
+	logger.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE, Nlink: 1}
 	n.preserveOwner(ctx, &st)
 	pr := n.EmbeddedInode()
@@ -311,7 +311,7 @@ func (n *NFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 		return fs.OK
 	}
 
-	log.Infof("Rmdir %s/%s, %v", n.Path(n.Root()), name, ch.StableAttr().Ino)
+	logger.Infof("Rmdir %s/%s, %v", n.Path(n.Root()), name, ch.StableAttr().Ino)
 
 	if !n.RootData.isEmptyDir(ch) {
 		return syscall.ENOTEMPTY
@@ -328,7 +328,7 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 		return fs.OK
 	}
 
-	log.Infof("Unlink /%s/%s", n.Path(n.Root()), name)
+	logger.Infof("Unlink /%s/%s", n.Path(n.Root()), name)
 	// TODO: ignore unlink cache error?
 	err := syscall.Unlink(n.cachePath(ch))
 	n.RootData.delete(ch)
