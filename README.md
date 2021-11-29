@@ -1,5 +1,7 @@
 # GO-Network-FUSE
 
+[![CI](https://github.com/Hookey/go-networkfuse/actions/workflows/ci.yml/badge.svg)](https://github.com/Hookey/go-networkfuse/actions/workflows/ci.yml)
+
 A user-space filesystem based on 
 [github.com/hanwen/go-fuse/fs](https://godoc.org/github.com/hanwen/go-fuse/fs)
 
