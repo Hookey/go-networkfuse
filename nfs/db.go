@@ -51,8 +51,6 @@ func (s *MetaStore) Lookup(ino uint64) *Item {
 func (s *MetaStore) LookupDentry(pino uint64, name string) *Item {
 	var i Item
 	h := s.hashLink(pino, name)
-	//s.Store.FindOne(&i, badgerhold.Where("Hash").Eq(h).Index("hashIdx"))
-	//TODO: subquery
 	s.Store.ForEach(badgerhold.Where("Hash").Eq(h).Index("hashIdx"), func(record *Item) error {
 		if record.Link.Pino == pino && record.Link.Name == name {
 			i = *record
@@ -73,6 +71,7 @@ func (s *MetaStore) SoftDelete(ino uint64) error {
 		}
 
 		i.Link.Pino = RecycleBin
+		i.Stat.Nlink = 0
 		return nil
 	})
 }
@@ -134,6 +133,7 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
 			}
 
 			i.Link.Pino = RecycleBin
+			i.Stat.Nlink = 0
 			return nil
 		}); err != nil {
 			return err
