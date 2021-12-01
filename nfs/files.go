@@ -52,11 +52,33 @@ func (f *NFScache) Write(ctx context.Context, data []byte, off int64) (uint32, s
 		n64 := int64(n)
 		if off+n64 > f.st.Size {
 			f.st.Size = off + n64
-			f.st.Blocks = ((4095 + f.st.Size) >> 12) << 3
+			f.st.Blocks = blocksFrom(f.st.Size)
 		}
 		f.write = true
 	}
 	return uint32(n), fs.ToErrno(err)
+}
+
+func blocksFrom(size int64) int64 {
+	return ((4095 + size) >> 12) << 3
+}
+
+func (f *NFScache) Allocate(ctx context.Context, off uint64, sz uint64, mode uint32) syscall.Errno {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	err := syscall.Fallocate(f.fd, mode, int64(off), int64(sz))
+	if err == nil {
+		if int64(off+sz) > f.st.Size {
+			f.st.Size = int64(off + sz)
+			f.st.Blocks = blocksFrom(f.st.Size)
+			// Update time later
+			f.write = true
+		} else {
+			f.st.Ctim = nowTimespec()
+		}
+	}
+
+	return fs.ToErrno(err)
 }
 
 func (f *NFScache) UpdateTime() {
