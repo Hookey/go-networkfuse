@@ -3,15 +3,20 @@ package nfs
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/hanwen/go-fuse/v2/posixtest"
 )
 
 type testCase struct {
@@ -157,4 +162,168 @@ func TestBasic(t *testing.T) {
 	if fi, err := os.Lstat(fn); err == nil {
 		t.Errorf("Lstat after remove: got file %v", fi)
 	}
+}
+
+func TestGetAttrParallel(t *testing.T) {
+	// We grab a file-handle to provide to the API so rename+fstat
+	// can be handled correctly. Here, test that closing and
+	// (f)stat in parallel don't lead to fstat on closed files.
+	// We can only test that if we switch off caching
+	tc := newTestCase(t, &testOptions{suppressDebug: true})
+	defer tc.Clean()
+
+	N := 100
+
+	var fds []int
+	var fns []string
+	for i := 0; i < N; i++ {
+		fn := filepath.Join(tc.mntDir, fmt.Sprintf("file%d", i))
+		if err := ioutil.WriteFile(fn, []byte("hello"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		fns = append(fns, fn)
+		fd, err := syscall.Open(fn, syscall.O_RDONLY, 0)
+		if err != nil {
+			t.Fatalf("Open %d: %v", i, err)
+		}
+
+		fds = append(fds, fd)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2 * N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			if err := syscall.Close(fds[i]); err != nil {
+				t.Errorf("close %d: %v", i, err)
+			}
+			wg.Done()
+		}(i)
+		go func(i int) {
+			var st syscall.Stat_t
+			if err := syscall.Lstat(fns[i], &st); err != nil {
+				t.Errorf("lstat %d: %v", i, err)
+			}
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestReadDirStress(t *testing.T) {
+	tc := newTestCase(t, &testOptions{suppressDebug: true, attrCache: true, entryCache: true})
+	defer tc.Clean()
+
+	// Create 110 entries
+	for i := 0; i < 110; i++ {
+		name := fmt.Sprintf("file%036x", i)
+		if err := ioutil.WriteFile(filepath.Join(tc.mntDir, name), []byte("hello"), 0644); err != nil {
+			t.Fatalf("WriteFile %q: %v", name, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	stress := func(gr int) {
+		defer wg.Done()
+		for i := 1; i < 100; i++ {
+			f, err := os.Open(tc.mntDir)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, err = f.Readdirnames(-1)
+			if err != nil {
+				t.Errorf("goroutine %d iteration %d: %v", gr, i, err)
+				f.Close()
+				return
+			}
+			f.Close()
+		}
+	}
+
+	n := 3
+	for i := 1; i <= n; i++ {
+		wg.Add(1)
+		go stress(i)
+	}
+	wg.Wait()
+}
+
+func TestMknod(t *testing.T) {
+	tc := newTestCase(t, &testOptions{})
+	defer tc.Clean()
+
+	modes := map[string]uint32{
+		"regular": syscall.S_IFREG,
+		"socket":  syscall.S_IFSOCK,
+		"fifo":    syscall.S_IFIFO,
+	}
+
+	for nm, mode := range modes {
+		t.Run(nm, func(t *testing.T) {
+			p := filepath.Join(tc.mntDir, nm)
+			err := syscall.Mknod(p, mode|0755, (8<<8)|0)
+			if err != nil {
+				t.Fatalf("mknod(%s): %v", nm, err)
+			}
+
+			var st syscall.Stat_t
+			if err := syscall.Stat(p, &st); err != nil {
+				got := st.Mode &^ 07777
+				if want := mode; got != want {
+					t.Fatalf("stat(%s): got %o want %o", nm, got, want)
+				}
+			}
+
+			// We could test if the files can be
+			// read/written but: The kernel handles FIFOs
+			// without talking to FUSE at all. Presumably,
+			// this also holds for sockets.  Regular files
+			// are tested extensively elsewhere.
+		})
+	}
+}
+
+func TestPosix(t *testing.T) {
+	noisy := map[string]bool{
+		"ParallelFileOpen": true,
+		"ReadDir":          true,
+	}
+
+	for nm, fn := range posixtest.All {
+		t.Run(nm, func(t *testing.T) {
+			tc := newTestCase(t, &testOptions{
+				suppressDebug: noisy[nm],
+				attrCache:     true, entryCache: true})
+			defer tc.Clean()
+
+			fn(t, tc.mntDir)
+		})
+	}
+}
+
+func TestOpenDirectIO(t *testing.T) {
+	// Apparently, tmpfs does not allow O_DIRECT, so try to create
+	// a test temp directory in /var/tmp.
+	ext4Dir, err := ioutil.TempDir("/var/tmp", "go-fuse.TestOpenDirectIO")
+	if err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	defer os.RemoveAll(ext4Dir)
+
+	posixtest.DirectIO(t, ext4Dir)
+	if t.Failed() {
+		t.Skip("DirectIO failed on underlying FS")
+	}
+
+	opts := testOptions{
+		testDir:    ext4Dir,
+		attrCache:  true,
+		entryCache: true,
+	}
+
+	tc := newTestCase(t, &opts)
+	defer tc.Clean()
+	posixtest.DirectIO(t, tc.mntDir)
 }
