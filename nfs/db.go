@@ -38,7 +38,7 @@ func (s *MetaStore) hashLink(pino uint64, name string) uint64 {
 }
 
 func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uint64, target string) error {
-	i := Item{Ino: st.Ino, Link: Link_t{Pino: pino, Name: name}, Hash: s.hashLink(pino, name), Stat: *st, Gen: gen, Target: target}
+	i := Item{Ino: st.Ino, Link: Link_t{Pino: pino, Name: name}, Hash: s.hashLink(pino, name), Stat: *st, Gen: gen, Symlink: target}
 	return s.Store.Upsert(st.Ino, i)
 }
 
@@ -185,10 +185,10 @@ type Link_t struct {
 }
 
 type Item struct {
-	Ino    uint64 `badgerhold:"key"`
-	Gen    uint64
-	Hash   uint64 `badgerholdIndex:"hashIdx"`
-	Link   Link_t
-	Stat   syscall.Stat_t
-	Target string
+	Ino     uint64 `badgerhold:"key"`
+	Gen     uint64
+	Hash    uint64 `badgerholdIndex:"hashIdx"`
+	Link    Link_t
+	Stat    syscall.Stat_t
+	Symlink string
 }

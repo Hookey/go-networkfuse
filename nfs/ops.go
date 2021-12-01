@@ -72,7 +72,7 @@ func (r *NFSRoot) readdir(self *fs.Inode) []*Item {
 
 func (r *NFSRoot) readlink(self *fs.Inode) string {
 	i := r.MetaStore.Lookup(self.StableAttr().Ino)
-	return i.Target
+	return i.Symlink
 }
 
 func (r *NFSRoot) lookup(parent *fs.Inode, name string) *Item {
