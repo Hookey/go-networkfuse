@@ -143,8 +143,10 @@ func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
 			return nil, err
 		}
 	}
-	//TODO: abnormal shutdown handling
-	//Move ino in temp bin to recycle bin
+
+	if err := root.MetaStore.CollectTempIno(); err != nil {
+		return nil, err
+	}
 
 	return root.newNode(nil, "", &st), nil
 }

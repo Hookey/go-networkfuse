@@ -86,12 +86,24 @@ func (s *MetaStore) ApplyIno() (uint64, uint64) {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
-		//log.Infof("apply %v", i)
 		i.Link.Pino = uint64(TempBin)
 		ino, gen = i.Ino, i.Gen
 		return nil
 	})
 	return ino, gen
+}
+
+// CollectTempIno collects all inos under temp bin, move to recycle bin. A cleanup for abnormal shutdown.
+func (s *MetaStore) CollectTempIno() error {
+	return s.Store.UpdateMatching(&Item{}, badgerhold.Where("Link.Pino").Eq(uint64(TempBin)), func(record interface{}) error {
+		i, ok := record.(*Item)
+		if !ok {
+			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+		}
+
+		i.Link.Pino = uint64(RecycleBin)
+		return nil
+	})
 }
 
 // NextAllocateIno inspects the max number of inode, and returns its value adds one.
