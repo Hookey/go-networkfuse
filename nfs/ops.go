@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -30,13 +29,38 @@ type NFSRoot struct {
 	*MetaStore
 
 	// nextNodeID is the next free NodeID. Increment after copying the value.
-	mu         sync.Mutex
 	nextNodeId uint64
+
+	// The in-memory shared data for open files indexed with inode number.
+	openStats
 
 	// NewNode returns a new InodeEmbedder to be used to respond
 	// to a LOOKUP/CREATE/MKDIR/MKNOD opcode. If not set, use a
 	// LoopbackNode.
 	NewNode func(rootData *NFSRoot, parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder
+}
+
+func (r *NFSRoot) getOpenStat(self *fs.Inode) *openStat {
+	return r.openStats.getOpenStat(self.StableAttr().Ino)
+}
+
+func (r *NFSRoot) applyOpenStat(self *fs.Inode, st *syscall.Stat_t) *openStat {
+	return r.openStats.applyOpenStat(self.StableAttr().Ino, st)
+}
+
+func (r *NFSRoot) releaseOpenStat(self *fs.Inode) {
+	if st, rm := r.openStats.releaseOpenStat(self.StableAttr().Ino); rm {
+		r.delete(self)
+	} else if st != nil {
+		r.setattr(self, st)
+	}
+}
+
+// snapshotOpenStat sync attr from openstat to db
+func (r *NFSRoot) snapshotOpenStat(self *fs.Inode) {
+	if st := r.openStats.snapshotOpenStat(self.StableAttr().Ino); st != nil {
+		r.setattr(self, st)
+	}
 }
 
 func (r *NFSRoot) insert(parent *fs.Inode, name string, st *syscall.Stat_t, gen uint64, target string) error {
@@ -95,12 +119,12 @@ func (r *NFSRoot) isEmptyDir(self *fs.Inode) bool {
 	return r.MetaStore.IsEmptyDir(self.StableAttr().Ino)
 }
 
-func (r *NFSRoot) replace(src, dst, dstDir *fs.Inode, dstname string) error {
-	return r.MetaStore.Replace(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname)
+func (r *NFSRoot) replace(src, dst, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
+	return r.MetaStore.Replace(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
 }
 
-func (r *NFSRoot) rename(src, dstDir *fs.Inode, dstname string) error {
-	return r.MetaStore.Rename(src.StableAttr().Ino, dstDir.StableAttr().Ino, dstname)
+func (r *NFSRoot) rename(src, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
+	return r.MetaStore.Rename(src.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
 }
 
 func (r *NFSRoot) newNode(parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder {
@@ -131,6 +155,7 @@ func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
 		Path:      rootPath,
 		Dev:       uint64(st.Dev),
 		MetaStore: store,
+		openStats: openStats{stats: map[uint64]*openStat{}},
 	}
 
 	root.nextNodeId = store.NextAllocateIno()
@@ -174,23 +199,21 @@ var _ = (fs.FileHandle)((*NFScache)(nil))
 
 func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	logger.Infof("getattr %s", n.Path(n.Root()))
-	if f != nil {
-		c := f.(*NFScache)
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		out.FromStat(&c.st)
 
-		return fs.OK
-		//return f.(fs.FileGetattrer).Getattr(ctx, out)
-	}
-
+	// go-fuse searches any existing filehandle, then it is doable to translate getattr to fgetattr.
 	self := n.EmbeddedInode()
-	st := n.RootData.getattr(self)
+	if o := n.RootData.getOpenStat(self); o != nil {
+		o.mu.Lock()
+		out.FromStat(&o.st)
+		o.mu.Unlock()
+	} else {
+		st := n.RootData.getattr(self)
 
-	if st.Ino == 0 {
-		return fs.ToErrno(os.ErrNotExist)
+		if st.Ino == 0 {
+			return fs.ToErrno(os.ErrNotExist)
+		}
+		out.FromStat(st)
 	}
-	out.FromStat(st)
 	return fs.OK
 }
 
@@ -198,20 +221,10 @@ var _ = (fs.NodeReleaser)((*NFSNode)(nil))
 
 func (n *NFSNode) Release(ctx context.Context, f fs.FileHandle) syscall.Errno {
 	self := n.EmbeddedInode()
+	n.RootData.releaseOpenStat(self)
 	c := f.(*NFScache)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.fd != -1 {
-		//TODO cache time
-		logger.Infof("release  %s, %v", n.Path(n.Root()), c.st)
-		c.UpdateTime()
-
-		n.RootData.setattr(self, &c.st)
-		err := syscall.Close(c.fd)
-		c.fd = -1
-		return fs.ToErrno(err)
-	}
-	return syscall.EBADF
+	logger.Infof("release  %s, %v", n.Path(n.Root()), c.getAttr())
+	return c.Close()
 }
 
 var _ = (fs.NodeLookuper)((*NFSNode)(nil))
@@ -250,7 +263,9 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 		return nil, nil, 0, fs.ToErrno(err)
 	}
 
-	lf := NewNFSCache(fd, &st)
+	os := n.RootData.applyOpenStat(ch, &st)
+
+	lf := NewNFSCache(fd, os)
 	out.FromStat(&st)
 	return ch, lf, 0, 0
 }
@@ -331,9 +346,20 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 	}
 
 	logger.Infof("Unlink /%s/%s", n.Path(n.Root()), name)
-	// TODO: ignore unlink cache error?
+	//TODO: ignore unlink cache error?
 	err := syscall.Unlink(n.cachePath(ch))
-	n.RootData.delete(ch)
+
+	// Update Nlink of openstat to 0
+	if os := n.RootData.getOpenStat(ch); os != nil {
+		os.mu.Lock()
+		os.st.Nlink -= 1
+		if os.st.Nlink == 0 {
+			os.deferDel = true
+		}
+		os.mu.Unlock()
+	} else {
+		n.RootData.delete(ch)
+	}
 	return fs.ToErrno(err)
 }
 
@@ -356,11 +382,35 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 			syscall.Unlink(n.cachePath(ch2))
 		}
 
-		//TODO update stat, ctime...
-		err := n.RootData.replace(ch1, ch2, pr2, newName)
+		// Update Nlink of openstat to 0
+		now := nowTimespec()
+		if os := n.RootData.getOpenStat(ch2); os != nil {
+			os.mu.Lock()
+			os.st.Nlink -= 1
+			if os.st.Nlink == 0 {
+				os.deferDel = true
+			}
+			os.mu.Unlock()
+		}
+
+		if os := n.RootData.getOpenStat(ch1); os != nil {
+			os.mu.Lock()
+			os.st.Ctim = now
+			os.mu.Unlock()
+		}
+
+		// TODO: defer delete open ch2
+		err := n.RootData.replace(ch1, ch2, pr2, newName, &now)
 		return fs.ToErrno(err)
 	} else {
-		err := n.RootData.rename(ch1, pr2, newName)
+		now := nowTimespec()
+		if os := n.RootData.getOpenStat(ch1); os != nil {
+			os.mu.Lock()
+			os.st.Ctim = now
+			os.mu.Unlock()
+		}
+
+		err := n.RootData.rename(ch1, pr2, newName, &now)
 		return fs.ToErrno(err)
 	}
 }
@@ -373,14 +423,16 @@ func (n *NFSNode) cachePath(self *fs.Inode) string {
 var _ = (fs.NodeOpener)((*NFSNode)(nil))
 
 func (n *NFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	self := n.EmbeddedInode()
 	flags = flags &^ syscall.O_APPEND
-	p := n.cachePath(n.EmbeddedInode())
+	p := n.cachePath(self)
 	f, err := syscall.Open(p, int(flags), 0)
 	if err != nil {
 		return nil, 0, fs.ToErrno(err)
 	}
-	st := n.RootData.getattr(n.EmbeddedInode())
-	lf := NewNFSCache(f, st)
+	st := n.RootData.getattr(self)
+	os := n.RootData.applyOpenStat(self, st)
+	lf := NewNFSCache(f, os)
 	return lf, 0, 0
 }
 
@@ -389,10 +441,7 @@ var _ = (fs.NodeFlusher)((*NFSNode)(nil))
 func (n *NFSNode) Flush(ctx context.Context, f fs.FileHandle) syscall.Errno {
 	self := n.EmbeddedInode()
 	c := f.(*NFScache)
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	c.UpdateTime()
 	// Since Flush() may be called for each dup'd fd, we don't
 	// want to really close the file, we just want to flush. This
 	// is achieved by closing a dup'd fd.
@@ -402,7 +451,8 @@ func (n *NFSNode) Flush(ctx context.Context, f fs.FileHandle) syscall.Errno {
 		return fs.ToErrno(err)
 	}
 
-	n.RootData.setattr(self, &c.st)
+	n.RootData.snapshotOpenStat(self)
+	//n.RootData.setattr(self, c.stat())
 	return fs.OK
 }
 
@@ -411,16 +461,14 @@ var _ = (fs.NodeFsyncer)((*NFSNode)(nil))
 func (n *NFSNode) Fsync(ctx context.Context, f fs.FileHandle, flags uint32) syscall.Errno {
 	self := n.EmbeddedInode()
 	c := f.(*NFScache)
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	c.UpdateTime()
-	err := syscall.Fsync(c.fd)
-	if err == nil {
-		n.RootData.setattr(self, &c.st)
+	if err := syscall.Fsync(c.fd); err != nil {
+		return fs.ToErrno(err)
 	}
 
-	return fs.ToErrno(err)
+	n.RootData.snapshotOpenStat(self)
+
+	return fs.OK
 }
 
 var _ = (fs.NodeSetattrer)((*NFSNode)(nil))
@@ -435,55 +483,18 @@ func (n *NFSNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttr
 			return fs.ToErrno(err)
 		}
 		st := n.RootData.getattr(self)
-		c = NewNFSCache(fd, st).(*NFScache)
+		os := n.RootData.applyOpenStat(self, st)
+		defer n.RootData.releaseOpenStat(self)
+		c = NewNFSCache(fd, os).(*NFScache)
 	} else {
 		c = f.(*NFScache)
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	mode, ok := in.GetMode()
-	if ok {
-		c.st.Mode = mode
+	if errno := c.setAttr(in); errno != 0 {
+		return errno
 	}
 
-	uid32, uok := in.GetUID()
-	if uok {
-		c.st.Uid = uid32
-	}
-
-	gid32, gok := in.GetGID()
-	if gok {
-		c.st.Gid = gid32
-	}
-
-	mtime, mok := in.GetMTime()
-	if mok {
-		c.st.Mtim.Sec = mtime.Unix()
-		c.st.Mtim.Nsec = int64(mtime.Nanosecond())
-	}
-
-	atime, aok := in.GetATime()
-	if aok {
-		c.st.Atim.Sec = atime.Unix()
-		c.st.Atim.Nsec = int64(atime.Nanosecond())
-	}
-
-	sz, sok := in.GetSize()
-	if sok {
-		c.st.Size = int64(sz)
-		c.st.Blocks = ((4095 + c.st.Size) >> 12) << 3
-		errno = fs.ToErrno(syscall.Ftruncate(c.fd, int64(sz)))
-		if errno != 0 {
-			return errno
-		}
-	}
-
-	if f == nil {
-		n.RootData.setattr(self, &c.st)
-	}
-	out.FromStat(&c.st)
+	out.FromStat(c.getAttr())
 
 	return fs.OK
 }
@@ -516,6 +527,7 @@ var _ = (fs.NodeOpendirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Opendir(ctx context.Context) syscall.Errno {
 	//TODO: May use this to trigger sync dir content
+	//TODO: share dirstream
 	return fs.OK
 }
 

@@ -3,10 +3,8 @@ package nfs
 import (
 	"context"
 	"sync"
-
-	//	"time"
-
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -18,18 +16,14 @@ import (
 // operations are implemented. When using the Fd from a *os.File, call
 // syscall.Dup() on the fd, to avoid os.File's finalizer from closing
 // the file descriptor.
-func NewNFSCache(fd int, st *syscall.Stat_t) fs.FileHandle {
-	return &NFScache{fd: fd, st: *st}
+func NewNFSCache(fd int, os *openStat) fs.FileHandle {
+	return &NFScache{fd: fd, os: os}
 }
 
 type NFScache struct {
 	mu sync.Mutex
 	fd int
-	// TODO: shared data between openfiles to the same file
-	// in loopback fs, can rely on fd.
-	st    syscall.Stat_t
-	write bool
-	read  bool
+	os *openStat
 }
 
 var _ = (fs.FileHandle)((*NFScache)(nil))
@@ -37,10 +31,12 @@ var _ = (fs.FileReader)((*NFScache)(nil))
 var _ = (fs.FileWriter)((*NFScache)(nil))
 
 func (f *NFScache) Read(ctx context.Context, buf []byte, off int64) (res fuse.ReadResult, errno syscall.Errno) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	r := fuse.ReadResultFd(uintptr(f.fd), off, len(buf))
-	f.read = true
+	t := time.Now()
+	f.os.mu.Lock()
+	f.setAtime(t)
+	//f.os.read = true
+	f.os.mu.Unlock()
 	return r, fs.OK
 }
 
@@ -49,54 +45,37 @@ func (f *NFScache) Write(ctx context.Context, data []byte, off int64) (uint32, s
 	defer f.mu.Unlock()
 	n, err := syscall.Pwrite(f.fd, data, off)
 	if err == nil {
-		n64 := int64(n)
-		if off+n64 > f.st.Size {
-			f.st.Size = off + n64
-			f.st.Blocks = blocksFrom(f.st.Size)
+		sz := int64(n) + off
+		if sz > f.os.st.Size {
+			f.setSize(sz)
 		}
-		f.write = true
+		t := time.Now()
+		f.setMtime(t)
+		//f.os.write = true
 	}
 	return uint32(n), fs.ToErrno(err)
 }
 
-func blocksFrom(size int64) int64 {
-	return ((4095 + size) >> 12) << 3
-}
-
-func (f *NFScache) Allocate(ctx context.Context, off uint64, sz uint64, mode uint32) syscall.Errno {
+func (f *NFScache) Allocate(ctx context.Context, off uint64, n uint64, mode uint32) syscall.Errno {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	err := syscall.Fallocate(f.fd, mode, int64(off), int64(sz))
+	n64 := int64(n)
+	off64 := int64(off)
+	err := syscall.Fallocate(f.fd, mode, off64, n64)
 	if err == nil {
-		if int64(off+sz) > f.st.Size {
-			f.st.Size = int64(off + sz)
-			f.st.Blocks = blocksFrom(f.st.Size)
-			// Update time later
-			f.write = true
+		t := time.Now()
+		sz := off64 + n64
+		if sz > f.os.st.Size {
+			f.setSize(sz)
+			//f.os.write = true
+			f.setMtime(t)
+			f.setCtime(t)
 		} else {
-			f.st.Ctim = nowTimespec()
+			f.setCtime(t)
 		}
 	}
 
 	return fs.ToErrno(err)
-}
-
-func (f *NFScache) UpdateTime() {
-	if f.write || f.read {
-		t := nowTimespec()
-
-		if f.write {
-			f.st.Mtim = t
-			f.st.Ctim = t
-		}
-
-		if f.read {
-			f.st.Atim = t
-		}
-
-		f.read = false
-		f.write = false
-	}
 }
 
 var _ = (fs.FileLseeker)((*NFScache)(nil))
@@ -106,6 +85,110 @@ func (f *NFScache) Lseek(ctx context.Context, off uint64, whence uint32) (uint64
 	defer f.mu.Unlock()
 	n, err := unix.Seek(f.fd, int64(off), int(whence))
 	return uint64(n), fs.ToErrno(err)
+}
+
+func (f *NFScache) Close() syscall.Errno {
+	if f.fd != -1 {
+		err := syscall.Close(f.fd)
+		f.fd = -1
+		return fs.ToErrno(err)
+	}
+	return syscall.EBADF
+}
+
+func (f *NFScache) setAttr(in *fuse.SetAttrIn) syscall.Errno {
+	f.os.mu.Lock()
+	defer f.os.mu.Unlock()
+
+	mode, ok := in.GetMode()
+	if ok {
+		f.setMode(mode)
+	}
+
+	uid32, uok := in.GetUID()
+	if uok {
+		f.setUid(uid32)
+	}
+
+	gid32, gok := in.GetGID()
+	if gok {
+		f.setGid(gid32)
+	}
+
+	mtime, mok := in.GetMTime()
+	if mok {
+		f.setMtime(mtime)
+	}
+
+	atime, aok := in.GetATime()
+	if aok {
+		f.setAtime(atime)
+	}
+
+	now := time.Now()
+	sz, sok := in.GetSize()
+	if sok {
+		sz64 := int64(sz)
+		errno := fs.ToErrno(syscall.Ftruncate(f.fd, sz64))
+		if errno != 0 {
+			f.os.change = false
+			return errno
+		}
+		f.setSize(sz64)
+		f.setMtime(now)
+		//c.os.write = true
+	}
+
+	f.setCtime(now)
+	return 0
+}
+
+func (f *NFScache) setMode(m uint32) {
+	f.os.st.Mode = m
+	f.os.change = true
+}
+
+func (f *NFScache) setUid(u uint32) {
+	f.os.st.Uid = u
+	f.os.change = true
+}
+
+func (f *NFScache) setGid(g uint32) {
+	f.os.st.Gid = g
+	f.os.change = true
+}
+
+func (f *NFScache) setSize(sz int64) {
+	f.os.st.Size = sz
+	f.os.st.Blocks = blocksFrom(sz)
+	f.os.write = true
+	f.os.change = true
+}
+
+func blocksFrom(size int64) int64 {
+	return ((4095 + size) >> 12) << 3
+}
+
+func (f *NFScache) setMtime(t time.Time) {
+	f.os.st.Mtim.Sec = t.Unix()
+	f.os.st.Mtim.Nsec = int64(t.Nanosecond())
+	f.os.change = true
+}
+
+func (f *NFScache) setAtime(t time.Time) {
+	f.os.st.Atim.Sec = t.Unix()
+	f.os.st.Atim.Nsec = int64(t.Nanosecond())
+	f.os.change = true
+}
+
+func (f *NFScache) setCtime(t time.Time) {
+	f.os.st.Ctim.Sec = t.Unix()
+	f.os.st.Ctim.Nsec = int64(t.Nanosecond())
+	f.os.change = true
+}
+
+func (f *NFScache) getAttr() *syscall.Stat_t {
+	return &f.os.st
 }
 
 /*

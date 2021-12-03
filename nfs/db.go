@@ -71,7 +71,7 @@ func (s *MetaStore) SoftDelete(ino uint64) error {
 		}
 
 		i.Link.Pino = RecycleBin
-		i.Stat.Nlink = 0
+		i.Stat.Nlink -= 1
 		return nil
 	})
 }
@@ -136,7 +136,8 @@ func (s *MetaStore) Delete(ino uint64) error {
 }
 
 // Replace is a variant of rename from ino to ino2
-func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
+func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string, now *syscall.Timespec) error {
+	var hash2 uint64
 	return s.Store.Badger().Update(func(tx *badger.Txn) error {
 		if err := s.Store.TxUpdateMatching(tx, &Item{}, badgerhold.Where("Ino").Eq(ino2), func(record interface{}) error {
 			i, ok := record.(*Item)
@@ -145,7 +146,8 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
 			}
 
 			i.Link.Pino = RecycleBin
-			i.Stat.Nlink = 0
+			i.Stat.Nlink -= 1
+			hash2 = i.Hash
 			return nil
 		}); err != nil {
 			return err
@@ -159,13 +161,14 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string) error {
 
 			i.Link.Pino = pino2
 			i.Link.Name = name2
-			i.Hash = s.hashLink(pino2, name2)
+			i.Hash = hash2
+			i.Stat.Ctim = *now
 			return nil
 		})
 	})
 }
 
-func (s *MetaStore) Rename(ino, pino2 uint64, name2 string) error {
+func (s *MetaStore) Rename(ino, pino2 uint64, name2 string, now *syscall.Timespec) error {
 	return s.Store.UpdateMatching(&Item{}, badgerhold.Where("Ino").Eq(ino), func(record interface{}) error {
 		i, ok := record.(*Item)
 		if !ok {
@@ -175,6 +178,7 @@ func (s *MetaStore) Rename(ino, pino2 uint64, name2 string) error {
 		i.Link.Pino = pino2
 		i.Link.Name = name2
 		i.Hash = s.hashLink(pino2, name2)
+		i.Stat.Ctim = *now
 		return nil
 	})
 }
