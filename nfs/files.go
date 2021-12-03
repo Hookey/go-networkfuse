@@ -2,7 +2,6 @@ package nfs
 
 import (
 	"context"
-	"sync"
 	"syscall"
 	"time"
 
@@ -21,7 +20,6 @@ func NewNFSCache(fd int, os *openStat) fs.FileHandle {
 }
 
 type NFScache struct {
-	mu sync.Mutex
 	fd int
 	os *openStat
 }
@@ -41,8 +39,6 @@ func (f *NFScache) Read(ctx context.Context, buf []byte, off int64) (res fuse.Re
 }
 
 func (f *NFScache) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	n, err := syscall.Pwrite(f.fd, data, off)
 	if err == nil {
 		sz := int64(n) + off
@@ -57,8 +53,6 @@ func (f *NFScache) Write(ctx context.Context, data []byte, off int64) (uint32, s
 }
 
 func (f *NFScache) Allocate(ctx context.Context, off uint64, n uint64, mode uint32) syscall.Errno {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	n64 := int64(n)
 	off64 := int64(off)
 	err := syscall.Fallocate(f.fd, mode, off64, n64)
@@ -81,8 +75,6 @@ func (f *NFScache) Allocate(ctx context.Context, off uint64, n uint64, mode uint
 var _ = (fs.FileLseeker)((*NFScache)(nil))
 
 func (f *NFScache) Lseek(ctx context.Context, off uint64, whence uint32) (uint64, syscall.Errno) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	n, err := unix.Seek(f.fd, int64(off), int(whence))
 	return uint64(n), fs.ToErrno(err)
 }
@@ -161,7 +153,7 @@ func (f *NFScache) setGid(g uint32) {
 func (f *NFScache) setSize(sz int64) {
 	f.os.st.Size = sz
 	f.os.st.Blocks = blocksFrom(sz)
-	f.os.write = true
+	//f.os.write = true
 	f.os.change = true
 }
 
