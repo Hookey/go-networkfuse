@@ -327,3 +327,82 @@ func TestOpenDirectIO(t *testing.T) {
 	defer tc.Clean()
 	posixtest.DirectIO(t, tc.mntDir)
 }
+
+// FstatRenamed is similar to posixtest.FstatDeleted, but Fstat()s multiple renamed files
+// in random order and checks that the results match an earlier Stat().
+//
+// Excercises the fd-finding logic in rawBridge.GetAttr.
+func TestFstatRenamed(t *testing.T) {
+	const iMax = 9
+	type file struct {
+		fd  int
+		dst string
+		s   syscall.Stat_t
+		d   syscall.Stat_t
+	}
+	files := make(map[int]file)
+
+	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
+	defer tc.Clean()
+
+	for i := 0; i <= iMax; i++ {
+		// Create files with different sizes
+		src := fmt.Sprintf("%s/%d.src", tc.mntDir, i)
+		dst := fmt.Sprintf("%s/%d.dst", tc.mntDir, i)
+		if err := ioutil.WriteFile(src, []byte(src), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		if err := ioutil.WriteFile(dst, []byte(dst), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		var d, s syscall.Stat_t
+		if err := syscall.Stat(dst, &d); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Stat(src, &s); err != nil {
+			t.Fatal(err)
+		}
+
+		// Open
+		fd, err := syscall.Open(dst, syscall.O_RDONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[i] = file{fd, dst, s, d}
+		defer syscall.Close(fd)
+
+		// Rename
+		err = syscall.Rename(src, dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Fstat in random order
+	for _, v := range files {
+		var d, s syscall.Stat_t
+		if err := syscall.Fstat(v.fd, &d); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := syscall.Stat(v.dst, &s); err != nil {
+			t.Fatal(err)
+		}
+		// Ignore ctime, changes on unlink
+		v.d.Ctim = syscall.Timespec{}
+		d.Ctim = syscall.Timespec{}
+		v.s.Ctim = syscall.Timespec{}
+		s.Ctim = syscall.Timespec{}
+		// Nlink value should have dropped to zero
+		v.d.Nlink = 0
+		// Rest should stay the same
+		if v.d != d {
+			t.Errorf("stat mismatch: want=%v\n have=%v", v.d, d)
+		}
+
+		if v.s != s {
+			t.Errorf("stat mismatch: want=%v\n have=%v", v.s, s)
+		}
+	}
+}

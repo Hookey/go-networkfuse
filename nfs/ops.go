@@ -119,6 +119,10 @@ func (r *NFSRoot) isEmptyDir(self *fs.Inode) bool {
 	return r.MetaStore.IsEmptyDir(self.StableAttr().Ino)
 }
 
+func (r *NFSRoot) replaceOpen(src, dst, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
+	return r.MetaStore.ReplaceOpen(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
+}
+
 func (r *NFSRoot) replace(src, dst, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
 	return r.MetaStore.Replace(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
 }
@@ -372,6 +376,7 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	ch1 := pr1.GetChild(name)
 	pr2 := newParent.EmbeddedInode()
 	ch2 := pr2.GetChild(newName)
+	op := RENAME
 
 	if ch2 != nil {
 		// if target is dir, check it is empty
@@ -383,36 +388,36 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 		}
 
 		// Update Nlink of openstat to 0
-		now := nowTimespec()
+		op = REPLACE
 		if os := n.RootData.getOpenStat(ch2); os != nil {
 			os.mu.Lock()
 			os.st.Nlink -= 1
 			if os.st.Nlink == 0 {
 				os.deferDel = true
+				op = REPLACE_OPEN
 			}
 			os.mu.Unlock()
 		}
-
-		if os := n.RootData.getOpenStat(ch1); os != nil {
-			os.mu.Lock()
-			os.st.Ctim = now
-			os.mu.Unlock()
-		}
-
-		// TODO: defer delete open ch2
-		err := n.RootData.replace(ch1, ch2, pr2, newName, &now)
-		return fs.ToErrno(err)
-	} else {
-		now := nowTimespec()
-		if os := n.RootData.getOpenStat(ch1); os != nil {
-			os.mu.Lock()
-			os.st.Ctim = now
-			os.mu.Unlock()
-		}
-
-		err := n.RootData.rename(ch1, pr2, newName, &now)
-		return fs.ToErrno(err)
 	}
+
+	now := nowTimespec()
+	if os := n.RootData.getOpenStat(ch1); os != nil {
+		os.mu.Lock()
+		os.st.Ctim = now
+		os.mu.Unlock()
+	}
+
+	var err error
+	switch op {
+	case RENAME:
+		err = n.RootData.rename(ch1, pr2, newName, &now)
+	case REPLACE:
+		err = n.RootData.replace(ch1, ch2, pr2, newName, &now)
+	case REPLACE_OPEN:
+		err = n.RootData.replaceOpen(ch1, ch2, pr2, newName, &now)
+	}
+
+	return fs.ToErrno(err)
 }
 
 func (n *NFSNode) cachePath(self *fs.Inode) string {
@@ -452,7 +457,6 @@ func (n *NFSNode) Flush(ctx context.Context, f fs.FileHandle) syscall.Errno {
 	}
 
 	n.RootData.snapshotOpenStat(self)
-	//n.RootData.setattr(self, c.stat())
 	return fs.OK
 }
 

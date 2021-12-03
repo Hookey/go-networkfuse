@@ -3,7 +3,19 @@ package nfs
 import "math"
 
 const (
-	RecycleBin = math.MaxUint64 - 1
-	TempBin    = math.MaxUint64 - 1
-	RootBin    = math.MaxUint64
+	RecycleBin uint64 = iota + math.MaxUint64 - 2
+	TempBin
+	RootBin
+)
+
+const (
+	Used int = iota
+	Reclaiming
+	Reclaimed
+)
+
+const (
+	RENAME int = iota
+	REPLACE
+	REPLACE_OPEN
 )
