@@ -17,6 +17,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/hanwen/go-fuse/v2/posixtest"
+	"golang.org/x/sys/unix"
 )
 
 type testCase struct {
@@ -404,5 +405,55 @@ func TestFstatRenamed(t *testing.T) {
 		if v.s != s {
 			t.Errorf("stat mismatch: want=%v\n have=%v", v.s, s)
 		}
+	}
+}
+
+func TestRename2(t *testing.T) {
+	tc := newTestCase(t, &testOptions{attrCache: true, entryCache: true})
+	defer tc.Clean()
+
+	//RENAME_EXCHANGE
+	//RENAME_NOREPLACE
+	//RENAME_WHITEOUT
+	src := fmt.Sprintf("%s/src", tc.mntDir)
+	dst := fmt.Sprintf("%s/dst", tc.mntDir)
+	content1 := []byte(src)
+	content2 := []byte(dst)
+	if err := ioutil.WriteFile(src, content1, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_EXCHANGE); err == nil || err.(syscall.Errno) != syscall.ENOENT {
+		t.Error(err)
+	}
+
+	if err := unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE); err != nil {
+		t.Error(err)
+	}
+
+	if data, err := ioutil.ReadFile(dst); err != nil || bytes.Compare(data, content1) != 0 {
+		t.Fatalf("ReadAt: %v", err)
+	}
+
+	if err := ioutil.WriteFile(src, content2, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE)
+	if err == nil || err.(syscall.Errno) != syscall.EEXIST {
+		t.Error(err)
+	}
+
+	err = unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_EXCHANGE)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if data, err := ioutil.ReadFile(dst); err != nil || bytes.Compare(data, content2) != 0 {
+		t.Fatalf("ReadAt: %v", err)
+	}
+
+	if data, err := ioutil.ReadFile(src); err != nil || bytes.Compare(data, content1) != 0 {
+		t.Fatalf("ReadAt: %v", err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	logging "github.com/ipfs/go-log/v2"
+	"golang.org/x/sys/unix"
 )
 
 var logger = logging.Logger("nfs")
@@ -125,6 +126,10 @@ func (r *NFSRoot) replaceOpen(src, dst, dstDir *fs.Inode, dstname string, now *s
 
 func (r *NFSRoot) replace(src, dst, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
 	return r.MetaStore.Replace(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
+}
+
+func (r *NFSRoot) exchange(src, srcDir, dst, dstDir *fs.Inode, srcname, dstname string, now *syscall.Timespec) error {
+	return r.MetaStore.Exchange(src.StableAttr().Ino, srcDir.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, srcname, dstname, now)
 }
 
 func (r *NFSRoot) rename(src, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
@@ -370,37 +375,59 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 var _ = (fs.NodeRenamer)((*NFSNode)(nil))
 
 func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
-	//TODO: flags&RENAME_EXCHANGE
-	//TODO: flags&RENAME_NOREPLACE
+	if flags&unix.RENAME_WHITEOUT == unix.RENAME_WHITEOUT {
+		return syscall.EINVAL
+	}
+
+	if flags&(unix.RENAME_NOREPLACE|unix.RENAME_EXCHANGE) == (unix.RENAME_NOREPLACE | unix.RENAME_EXCHANGE) {
+		return syscall.EINVAL
+	}
+
 	pr1 := n.EmbeddedInode()
 	ch1 := pr1.GetChild(name)
 	pr2 := newParent.EmbeddedInode()
 	ch2 := pr2.GetChild(newName)
 	op := RENAME
+	now := nowTimespec()
 
-	if ch2 != nil {
-		// if target is dir, check it is empty
-		if ch2.StableAttr().Mode&syscall.S_IFDIR != 0 && !n.RootData.isEmptyDir(ch2) {
-			return syscall.ENOTEMPTY
-			// if target is file, delete cache
-		} else if ch2.StableAttr().Mode&syscall.S_IFREG != 0 {
-			syscall.Unlink(n.cachePath(ch2))
+	if flags&unix.RENAME_NOREPLACE == unix.RENAME_NOREPLACE {
+		if ch2 != nil {
+			return syscall.EEXIST
 		}
-
-		// Update Nlink of openstat to 0
-		op = REPLACE
+	} else if flags&unix.RENAME_EXCHANGE == unix.RENAME_EXCHANGE {
+		if ch2 == nil {
+			return syscall.ENOENT
+		}
+		op = EXCHANGE
 		if os := n.RootData.getOpenStat(ch2); os != nil {
 			os.mu.Lock()
-			os.st.Nlink -= 1
-			if os.st.Nlink == 0 {
-				os.deferDel = true
-				op = REPLACE_OPEN
-			}
+			os.st.Ctim = now
 			os.mu.Unlock()
+		}
+	} else {
+		if ch2 != nil {
+			// if target is dir, check it is empty
+			if ch2.StableAttr().Mode&syscall.S_IFDIR != 0 && !n.RootData.isEmptyDir(ch2) {
+				return syscall.ENOTEMPTY
+				// if target is file, delete cache
+			} else if ch2.StableAttr().Mode&syscall.S_IFREG != 0 {
+				syscall.Unlink(n.cachePath(ch2))
+			}
+
+			// Minus1 Nlink of openstat
+			op = REPLACE
+			if os := n.RootData.getOpenStat(ch2); os != nil {
+				os.mu.Lock()
+				os.st.Nlink -= 1
+				if os.st.Nlink == 0 {
+					os.deferDel = true
+					op = REPLACE_OPEN
+				}
+				os.mu.Unlock()
+			}
 		}
 	}
 
-	now := nowTimespec()
 	if os := n.RootData.getOpenStat(ch1); os != nil {
 		os.mu.Lock()
 		os.st.Ctim = now
@@ -415,6 +442,8 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 		err = n.RootData.replace(ch1, ch2, pr2, newName, &now)
 	case REPLACE_OPEN:
 		err = n.RootData.replaceOpen(ch1, ch2, pr2, newName, &now)
+	case EXCHANGE:
+		err = n.RootData.exchange(ch1, pr1, ch2, pr2, name, newName, &now)
 	}
 
 	return fs.ToErrno(err)

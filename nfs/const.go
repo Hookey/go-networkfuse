@@ -18,4 +18,5 @@ const (
 	RENAME int = iota
 	REPLACE
 	REPLACE_OPEN
+	EXCHANGE
 )

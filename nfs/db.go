@@ -168,7 +168,7 @@ func (s *MetaStore) ReplaceOpen(ino, ino2, pino2 uint64, name2 string, now *sysc
 	})
 }
 
-// Replace is a variant of rename from ino to ino2
+// Replace is a variant of rename from ino to ino2, ino2 deleted
 func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string, now *syscall.Timespec) error {
 	var hash2 uint64
 	return s.Store.Badger().Update(func(tx *badger.Txn) error {
@@ -197,6 +197,41 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string, now *syscall.
 			i.Link.Name = name2
 			i.Hash = hash2
 			i.Stat.Ctim = *now
+			return nil
+		})
+	})
+}
+
+// Exchange is a variant of rename from ino to ino2, ino2 to ino
+func (s *MetaStore) Exchange(ino, pino, ino2, pino2 uint64, name, name2 string, now *syscall.Timespec) error {
+	var hash2 uint64
+	return s.Store.Badger().Update(func(tx *badger.Txn) error {
+		if err := s.Store.TxUpdateMatching(tx, &Item{}, badgerhold.Where("Ino").Eq(ino2), func(record interface{}) error {
+			i, ok := record.(*Item)
+			if !ok {
+				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+			}
+
+			i.Link.Pino = pino
+			i.Link.Name = name
+			i.Stat.Ctim = *now
+			hash2 = i.Hash
+			i.Hash = s.hashLink(pino, name)
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		return s.Store.TxUpdateMatching(tx, &Item{}, badgerhold.Where("Ino").Eq(ino), func(record interface{}) error {
+			i, ok := record.(*Item)
+			if !ok {
+				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
+			}
+
+			i.Link.Pino = pino2
+			i.Link.Name = name2
+			i.Stat.Ctim = *now
+			i.Hash = hash2
 			return nil
 		})
 	})
