@@ -13,7 +13,7 @@ import (
 	"path"
 	"path/filepath"
 
-	"example.com/nfuse/nfs"
+	"github.com/Hookey/go-networkfuse/nfs"
 	fuse "github.com/hanwen/go-fuse/v2/fs"
 	logging "github.com/ipfs/go-log/v2"
 	"go.uber.org/zap/zapcore"

@@ -1,4 +1,4 @@
-module example.com/nfuse
+module github.com/Hookey/go-networkfuse
 
 go 1.16
 
