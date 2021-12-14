@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+option go_package = "github.com/Hookey/go-networkfuse/api/pb/nfspb";
+
+package nfspb;
+
+// The cloud API service definition.
+service API {
+  rpc Put (PutRequest) returns (PutReply) {}
+  rpc Get (GetRequest) returns (GetReply) {}
+}
+
+// The request message containing the local:src, cloud:dst path.
+message PutRequest {
+  string path = 1;
+}
+
+message PutReply {
+}
+
+// The request message containing the cloud:src, local:dst path.
+message GetRequest {
+  string path = 1;
+}
+
+message GetReply {
+}
+

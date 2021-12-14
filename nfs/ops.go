@@ -157,11 +157,11 @@ func idFromStat(st *syscall.Stat_t, gen uint64) fs.StableAttr {
 // NewNFSRoot returns a root node for a network file system whose
 // root is at the given root. This node implements all NodeXxxxer
 // operations available.
-func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
+func NewNFSRoot(rootPath string, store *MetaStore) (*NFSRoot, fs.InodeEmbedder, error) {
 	var st syscall.Stat_t
 	err := syscall.Stat(rootPath, &st)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	root := &NFSRoot{
@@ -178,15 +178,15 @@ func NewNFSRoot(rootPath string, store *MetaStore) (fs.InodeEmbedder, error) {
 		var gen uint64
 		st.Ino, gen = root.applyIno()
 		if err := root.MetaStore.Insert(RootBin, "/", &st, gen, ""); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	if err := root.MetaStore.CollectTempIno(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return root.newNode(nil, "", &st), nil
+	return root, root.newNode(nil, "", &st), nil
 }
 
 // NFSNode is a filesystem node in a loopback file system. It is

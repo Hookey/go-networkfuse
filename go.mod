@@ -3,15 +3,15 @@ module github.com/Hookey/go-networkfuse
 go 1.16
 
 require (
-	github.com/cespare/xxhash v1.1.0 // indirect
-	github.com/cespare/xxhash/v2 v2.1.1 // indirect
-	github.com/dgraph-io/badger/v3 v3.2103.1 // indirect
+	github.com/Hookey/go-sync v0.0.0-20211209092726-f4ae1a70952d
+	github.com/cespare/xxhash/v2 v2.1.1
+	github.com/dgraph-io/badger/v3 v3.2103.1
 	github.com/hanwen/go-fuse/v2 v2.1.0
 	github.com/ipfs/go-log/v2 v2.3.0
+	github.com/spf13/cobra v1.2.1
 	github.com/timshannon/badgerhold/v4 v4.0.1
 	go.uber.org/zap v1.19.0
-	golang.org/x/lint v0.0.0-20210508222113-6edffad5e616 // indirect
-	golang.org/x/sys v0.0.0-20210630005230-0f9fa26af87c // indirect
-	golang.org/x/tools v0.1.2 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
+	golang.org/x/sys v0.0.0-20210630005230-0f9fa26af87c
+	google.golang.org/grpc v1.42.0
+	google.golang.org/protobuf v1.27.1
 )

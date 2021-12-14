@@ -9,14 +9,18 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
 
+	"github.com/Hookey/go-networkfuse/api"
+	pb "github.com/Hookey/go-networkfuse/api/pb"
 	"github.com/Hookey/go-networkfuse/nfs"
 	fuse "github.com/hanwen/go-fuse/v2/fs"
 	logging "github.com/ipfs/go-log/v2"
 	"go.uber.org/zap/zapcore"
+	"google.golang.org/grpc"
 )
 
 var log = logging.Logger("main")
@@ -65,7 +69,24 @@ func LevelFromDebugFlag(debug bool) logging.LogLevel {
 	}
 }
 
+func runServer(port *string, r *nfs.NFSRoot) error {
+	lis, err := net.Listen("tcp", *port)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	s := grpc.NewServer()
+	pb.RegisterAPIServer(s, &api.Service{NFSRoot: r})
+
+	log.Infof("server listening at %v", lis.Addr())
+
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("failed to serve: %v", err)
+	}
+	return nil
+}
+
 func main() {
+	port := flag.String("port", ":50052", "nfuse cli port")
 	debug := flag.Bool("debug", false, "print debug data")
 	db := flag.String("db", ".db", "db location")
 	logFile := flag.String("logFile", "", "File to write logs to")
@@ -101,18 +122,22 @@ func main() {
 
 	//TODO: root.embed().stableattr.ino is set to 0, should be 1 instead. Need to wait go-fuse fix
 	// https://github.com/hanwen/go-fuse/issues/399
-	nfsRoot, err := nfs.NewNFSRoot(orig, store)
+	nfsRoot, embedNode, err := nfs.NewNFSRoot(orig, store)
 	if err != nil {
 		log.Fatalf("NewLoopbackRoot(%s): %v\n", orig, err)
 	}
 
 	opts := &fuse.Options{}
 	opts.Debug = *debug
-	server, err := fuse.Mount(mnt, nfsRoot, opts)
+	nfs, err := fuse.Mount(mnt, embedNode, opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
 	//TODO: umount mountpoint correctly
-	defer server.Unmount()
-	server.Wait()
+	defer nfs.Unmount()
+
+	//TODO: use ctx to check runserver is okay
+	go runServer(port, nfsRoot)
+
+	nfs.Wait()
 }
