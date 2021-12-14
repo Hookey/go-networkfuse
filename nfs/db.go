@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"fmt"
+	"strings"
 	"syscall"
 
 	"github.com/cespare/xxhash/v2"
@@ -60,6 +61,35 @@ func (s *MetaStore) LookupDentry(pino uint64, name string) *Item {
 		return nil
 	})
 	return &i
+}
+
+func (s *MetaStore) Resolve(path string) (it *Item) {
+	sPath := strings.Split(validatePath(path), "/")
+	pino := uint64(1)
+	for i := 0; i < len(sPath); i++ {
+		if len(sPath[i]) == 0 {
+			continue
+		}
+
+		it = s.LookupDentry(pino, sPath[i])
+		if it == nil {
+			return
+		}
+		pino = it.Ino
+	}
+	return
+}
+
+func validatePath(p string) (path string) {
+	path = p
+
+	if !strings.HasPrefix(path, "/") {
+		path = fmt.Sprintf("/%s", path)
+	}
+
+	path = strings.TrimSuffix(path, "/")
+
+	return
 }
 
 // SoftDelete moves certain inode to conceptual recycle bin(pino=0)

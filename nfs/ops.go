@@ -136,6 +136,10 @@ func (r *NFSRoot) rename(src, dstDir *fs.Inode, dstname string, now *syscall.Tim
 	return r.MetaStore.Rename(src.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
 }
 
+func (r *NFSRoot) resolve(path string) *Item {
+	return r.MetaStore.Resolve(path)
+}
+
 func (r *NFSRoot) newNode(parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder {
 	return &NFSNode{
 		RootData: r,
