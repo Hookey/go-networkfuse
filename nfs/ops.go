@@ -52,6 +52,7 @@ func (r *NFSRoot) applyOpenStat(self *fs.Inode, st *syscall.Stat_t) *openStat {
 func (r *NFSRoot) releaseOpenStat(self *fs.Inode) {
 	if st, rm := r.openStats.releaseOpenStat(self.StableAttr().Ino); rm {
 		r.delete(self)
+		syscall.Unlink(r.CachePath(st.Ino))
 	} else if st != nil {
 		r.setattr(self, st)
 	}
@@ -363,8 +364,6 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 	}
 
 	logger.Infof("Unlink /%s/%s", n.Path(n.Root()), name)
-	//TODO: ignore unlink cache error?
-	err := syscall.Unlink(n.cachePath(ch))
 
 	// Update Nlink of openstat to 0
 	if os := n.RootData.getOpenStat(ch); os != nil {
@@ -376,8 +375,10 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 		os.mu.Unlock()
 	} else {
 		n.RootData.delete(ch)
+		// TODO: go routine?
+		syscall.Unlink(n.cachePath(ch))
 	}
-	return fs.ToErrno(err)
+	return fs.OK
 }
 
 var _ = (fs.NodeRenamer)((*NFSNode)(nil))
