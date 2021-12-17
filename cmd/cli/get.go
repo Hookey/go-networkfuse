@@ -3,9 +3,12 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	pb "github.com/Hookey/go-networkfuse/api/pb"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func get(cmd *cobra.Command, args []string) (err error) {
@@ -15,7 +18,20 @@ func get(cmd *cobra.Command, args []string) (err error) {
 
 	path := args[0]
 
-	_, err = c.Get(context.Background(), &pb.GetRequest{Path: path})
+	reply, err := c.Get(context.Background(), &pb.GetRequest{Path: path})
+	st, ok := status.FromError(err)
+	if !ok {
+		// Error was not a status error
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Use st.Message() and st.Code()
+	if st.Code() != codes.OK {
+		fmt.Println(st.Message())
+	} else {
+		fmt.Println(path, reply.GetMsg())
+	}
 
 	return
 }

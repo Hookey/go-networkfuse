@@ -17,6 +17,7 @@ import (
 	"github.com/Hookey/go-networkfuse/api"
 	pb "github.com/Hookey/go-networkfuse/api/pb"
 	"github.com/Hookey/go-networkfuse/nfs"
+	"github.com/Hookey/go-networkfuse/sync"
 	fuse "github.com/hanwen/go-fuse/v2/fs"
 	logging "github.com/ipfs/go-log/v2"
 	"go.uber.org/zap/zapcore"
@@ -75,7 +76,7 @@ func runServer(port *string, r *nfs.NFSRoot) error {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
-	pb.RegisterAPIServer(s, &api.Service{NFSRoot: r})
+	pb.RegisterAPIServer(s, &api.NFSService{NFSRoot: r})
 
 	log.Infof("server listening at %v", lis.Addr())
 
@@ -86,6 +87,8 @@ func runServer(port *string, r *nfs.NFSRoot) error {
 }
 
 func main() {
+	// TODO: use config or is this ok?
+	sync.Addr = flag.String("addr", "localhost:50051", "sync address")
 	port := flag.String("port", ":50052", "nfuse cli port")
 	debug := flag.Bool("debug", false, "print debug data")
 	db := flag.String("db", ".db", "db location")

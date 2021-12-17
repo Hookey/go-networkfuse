@@ -140,6 +140,10 @@ func (r *NFSRoot) resolve(path string) *Item {
 	return r.MetaStore.Resolve(path)
 }
 
+func (r *NFSRoot) Resolve(path string) *Item {
+	return r.MetaStore.Resolve(path)
+}
+
 func (r *NFSRoot) newNode(parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder {
 	return &NFSNode{
 		RootData: r,
@@ -453,9 +457,13 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	return fs.ToErrno(err)
 }
 
-func (n *NFSNode) cachePath(self *fs.Inode) string {
+func (r *NFSRoot) CachePath(ino uint64) string {
 	//TODO: split caches, prevent large_dir perf regression
-	return filepath.Join(n.RootData.Path, strconv.FormatUint(self.StableAttr().Ino, 10))
+	return filepath.Join(r.Path, strconv.FormatUint(ino, 10))
+}
+
+func (n *NFSNode) cachePath(self *fs.Inode) string {
+	return n.RootData.CachePath(self.StableAttr().Ino)
 }
 
 var _ = (fs.NodeOpener)((*NFSNode)(nil))

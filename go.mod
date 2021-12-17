@@ -3,7 +3,7 @@ module github.com/Hookey/go-networkfuse
 go 1.16
 
 require (
-	github.com/Hookey/go-sync v0.0.0-20211209092726-f4ae1a70952d
+	github.com/Hookey/go-sync v0.0.0-20211213101316-e7fe4e7296c0
 	github.com/cespare/xxhash/v2 v2.1.1
 	github.com/dgraph-io/badger/v3 v3.2103.1
 	github.com/hanwen/go-fuse/v2 v2.1.0

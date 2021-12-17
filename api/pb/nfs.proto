@@ -16,6 +16,7 @@ message PutRequest {
 }
 
 message PutReply {
+  string msg = 1;
 }
 
 // The request message containing the cloud:src, local:dst path.
@@ -24,5 +25,6 @@ message GetRequest {
 }
 
 message GetReply {
+  string msg = 1;
 }
 
