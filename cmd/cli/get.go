@@ -17,6 +17,8 @@ func get(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	path := args[0]
+	path = strings.TrimLeft(path, "/")
+	path = strings.TrimRight(path, "/")
 
 	reply, err := c.Get(context.Background(), &pb.GetRequest{Path: path})
 	st, ok := status.FromError(err)

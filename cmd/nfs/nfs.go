@@ -89,6 +89,7 @@ func runServer(port *string, r *nfs.NFSRoot) error {
 func main() {
 	// TODO: use config or is this ok?
 	sync.Addr = flag.String("addr", "localhost:50051", "sync address")
+	sync.Prefix = flag.String("prefix", "/archfs", "cloud path prefix")
 	port := flag.String("port", ":50052", "nfuse cli port")
 	debug := flag.Bool("debug", false, "print debug data")
 	db := flag.String("db", ".db", "db location")

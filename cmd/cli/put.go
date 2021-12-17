@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	pb "github.com/Hookey/go-networkfuse/api/pb"
 	"github.com/spf13/cobra"
@@ -17,6 +18,8 @@ func put(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	path := args[0]
+	path = strings.TrimLeft(path, "/")
+	path = strings.TrimRight(path, "/")
 
 	reply, err := c.Put(context.Background(), &pb.PutRequest{Path: path})
 	st, ok := status.FromError(err)
