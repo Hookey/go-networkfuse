@@ -4,16 +4,17 @@ import "math"
 
 const (
 	RecycleBin uint64 = iota + math.MaxUint64 - 2
-	TempBin
+	ReclaimBin
 	RootBin
 )
 
 const (
 	Used int = iota
 	Reclaiming
-	Reclaimed
+	Recycled
 )
 
+// Rename related flags
 const (
 	RENAME int = iota
 	REPLACE

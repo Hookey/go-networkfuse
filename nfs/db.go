@@ -100,7 +100,7 @@ func (s *MetaStore) SoftDelete(ino uint64) error {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
-		i.State = Reclaimed
+		i.State = Recycled
 		i.Link.Pino = RecycleBin
 		i.Stat.Nlink -= 1
 		return nil
@@ -111,14 +111,14 @@ func (s *MetaStore) SoftDelete(ino uint64) error {
 func (s *MetaStore) ApplyIno() (uint64, uint64) {
 	var ino, gen uint64
 	//TODO: test parallel applyino
-	s.Store.UpdateMatching(&Item{}, badgerhold.Where("State").Eq(Reclaimed).Limit(1), func(record interface{}) error {
+	s.Store.UpdateMatching(&Item{}, badgerhold.Where("State").Eq(Recycled).Limit(1), func(record interface{}) error {
 		i, ok := record.(*Item)
 		if !ok {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
 		i.State = Reclaiming
-		i.Link.Pino = TempBin
+		i.Link.Pino = ReclaimBin
 		ino, gen = i.Ino, i.Gen
 		return nil
 	})
@@ -133,7 +133,7 @@ func (s *MetaStore) CollectTempIno() error {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
-		i.State = Reclaimed
+		i.State = Recycled
 		i.Link.Pino = RecycleBin
 		return nil
 	})
@@ -175,7 +175,7 @@ func (s *MetaStore) ReplaceOpen(ino, ino2, pino2 uint64, name2 string, now *sysc
 
 			if i.State == Used {
 				i.State = Reclaiming
-				i.Link.Pino = TempBin
+				i.Link.Pino = ReclaimBin
 			}
 			hash2 = i.Hash
 			return nil
@@ -208,7 +208,7 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string, now *syscall.
 				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 			}
 
-			i.State = Reclaimed
+			i.State = Recycled
 			i.Link.Pino = RecycleBin
 			i.Stat.Nlink -= 1
 			hash2 = i.Hash
