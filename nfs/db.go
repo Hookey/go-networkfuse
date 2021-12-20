@@ -100,6 +100,7 @@ func (s *MetaStore) SoftDelete(ino uint64) error {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
+		i.Stat.X__unused[1] = Recycled
 		i.State = Recycled
 		i.Link.Pino = RecycleBin
 		i.Stat.Nlink -= 1
@@ -117,6 +118,7 @@ func (s *MetaStore) ApplyIno() (uint64, uint64) {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
+		i.Stat.X__unused[1] = Reclaiming
 		i.State = Reclaiming
 		i.Link.Pino = ReclaimBin
 		ino, gen = i.Ino, i.Gen
@@ -133,6 +135,7 @@ func (s *MetaStore) CollectTempIno() error {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
+		i.Stat.X__unused[1] = Recycled
 		i.State = Recycled
 		i.Link.Pino = RecycleBin
 		return nil
@@ -174,6 +177,7 @@ func (s *MetaStore) ReplaceOpen(ino, ino2, pino2 uint64, name2 string, now *sysc
 			}
 
 			if i.State == Used {
+				i.Stat.X__unused[1] = Reclaiming
 				i.State = Reclaiming
 				i.Link.Pino = ReclaimBin
 			}
@@ -209,6 +213,7 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string, now *syscall.
 			}
 
 			i.State = Recycled
+			i.Stat.X__unused[1] = Recycled
 			i.Link.Pino = RecycleBin
 			i.Stat.Nlink -= 1
 			hash2 = i.Hash
@@ -306,5 +311,5 @@ type Item struct {
 	Link    Link_t
 	Stat    syscall.Stat_t
 	Symlink string
-	State   int `badgerholdIndex:"hashIdx"`
+	State   int64
 }

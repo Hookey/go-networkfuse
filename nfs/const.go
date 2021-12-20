@@ -8,10 +8,14 @@ const (
 	RootBin
 )
 
+// Detailed flag for file state, states are stored in Stat_t.X__unused[1]
 const (
-	Used int = iota
+	Recycled int64 = iota
 	Reclaiming
-	Recycled
+	Used
+	Uploading
+	Downloading
+	Archived
 )
 
 // Rename related flags

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	pb "github.com/Hookey/go-networkfuse/api/pb"
 	"github.com/spf13/cobra"
