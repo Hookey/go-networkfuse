@@ -354,8 +354,8 @@ var _ = (fs.NodeCreater)((*NFSNode)(nil))
 
 func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
 	logger.Infof("create %s/%s, %o", n.Path(n.Root()), name, mode)
-	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG, Blksize: syscall.S_BLKSIZE, Nlink: 1}
-	n.preserveOwner(ctx, &st)
+	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG}
+	n.generalizeStat(ctx, &st)
 
 	pr := n.EmbeddedInode()
 	ch, err := n.newChild(ctx, pr, name, &st, "")
@@ -392,9 +392,9 @@ func (n *NFSNode) newChild(ctx context.Context, parent *fs.Inode, name string, s
 	return ch, nil
 }
 
-// preserveOwner sets uid and gid of `path` according to the caller information
+// generalizeStat sets uid and gid of `path` according to the caller information
 // in `ctx`.
-func (n *NFSNode) preserveOwner(ctx context.Context, st *syscall.Stat_t) {
+func (n *NFSNode) generalizeStat(ctx context.Context, st *syscall.Stat_t) {
 	/*if os.Getuid() != 0 {
 		return nil
 	}*/
@@ -407,14 +407,17 @@ func (n *NFSNode) preserveOwner(ctx context.Context, st *syscall.Stat_t) {
 	st.Gid = caller.Gid
 	t := nowTimespec()
 	st.Atim, st.Mtim, st.Ctim = t, t, t
+	st.Nlink = 1
+	st.Blksize = syscall.S_BLKSIZE
+	st.X__unused[1] = Used
 }
 
 var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	logger.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
-	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR, Blksize: syscall.S_BLKSIZE, Nlink: 1}
-	n.preserveOwner(ctx, &st)
+	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR}
+	n.generalizeStat(ctx, &st)
 	pr := n.EmbeddedInode()
 	ch, err := n.newChild(ctx, pr, name, &st, "")
 	if err != nil {
@@ -648,8 +651,8 @@ var _ = (fs.NodeSymlinker)((*NFSNode)(nil))
 
 func (n *NFSNode) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	pr := n.EmbeddedInode()
-	st := syscall.Stat_t{Mode: 0755 | syscall.S_IFLNK, Size: int64(len(target)), Blksize: syscall.S_BLKSIZE, Nlink: 1}
-	n.preserveOwner(ctx, &st)
+	st := syscall.Stat_t{Mode: 0755 | syscall.S_IFLNK, Size: int64(len(target))}
+	n.generalizeStat(ctx, &st)
 
 	ch, err := n.newChild(ctx, pr, name, &st, target)
 	if err != nil {
@@ -686,8 +689,8 @@ func (n *NFSNode) Mknod(ctx context.Context, name string, mode, rdev uint32, out
 		mode |= 0700
 	}
 
-	st := syscall.Stat_t{Mode: mode, Rdev: uint64(rdev), Blksize: syscall.S_BLKSIZE, Nlink: 1}
-	n.preserveOwner(ctx, &st)
+	st := syscall.Stat_t{Mode: mode, Rdev: uint64(rdev)}
+	n.generalizeStat(ctx, &st)
 	pr := n.EmbeddedInode()
 	ch, err := n.newChild(ctx, pr, name, &st, "")
 	if err != nil {
