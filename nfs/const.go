@@ -15,6 +15,7 @@ const (
 	Used
 	Uploading
 	Downloading
+	Unused
 	Archived
 )
 

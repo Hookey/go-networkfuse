@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/Hookey/go-networkfuse/sync"
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -43,6 +44,86 @@ type NFSRoot struct {
 	NewNode func(rootData *NFSRoot, parent *fs.Inode, name string, st *syscall.Stat_t) fs.InodeEmbedder
 }
 
+func (r *NFSRoot) create(self *fs.Inode, flags int, st *syscall.Stat_t) (os *openStat, fd int, err error) {
+	os = r.ApplyOpenStat(st.Ino, st)
+	cachePath := r.CachePath(st.Ino)
+
+	if fd, err = r.openCache(os, cachePath, flags); err != nil {
+		os = nil
+		r.ReleaseOpenStat(st.Ino)
+		syscall.Unlink(cachePath)
+	}
+
+	return
+}
+
+func (r *NFSRoot) open(self *fs.Inode, flags int) (os *openStat, fd int, err error) {
+	var st *syscall.Stat_t
+	os = r.getOpenStat(self)
+	if os == nil {
+		st = r.getattr(self)
+
+		if st.Ino == 0 {
+			err = syscall.ENOENT
+			return
+		}
+	} else {
+		st = &os.st
+	}
+	os = r.ApplyOpenStat(st.Ino, st)
+
+	fd, err = r.openCache(os, r.CachePath(st.Ino), flags)
+	if err != nil {
+		r.ReleaseOpenStat(st.Ino)
+		os = nil
+	}
+
+	return
+}
+
+func (r *NFSRoot) openCache(os *openStat, cache string, flags int) (fd int, err error) {
+	os.mu.Lock()
+	defer os.mu.Unlock()
+
+	if os.Getstate() == Archived {
+		fd, err = syscall.Creat(cache, 0x666)
+		if err != nil {
+			return
+		}
+
+		defer syscall.Close(fd)
+		os.Setstate(Unused)
+		os.change = true
+	}
+
+	fd, err = syscall.Open(cache, flags&^syscall.O_TRUNC&^syscall.O_NOFOLLOW, os.st.Mode)
+	return
+}
+
+func (r *NFSRoot) download(os *openStat, path, cache string) error {
+	os.mu.Lock()
+	defer os.mu.Unlock()
+
+	if os.Getstate() == Unused {
+		cli, err := sync.NewClient(grpc.WithInsecure())
+		if err != nil {
+			return err
+		}
+		defer cli.Close()
+
+		os.Setstate(Downloading)
+		if err := cli.Get(path, cache); err != nil {
+			os.Setstate(Archived)
+			return err
+		}
+
+		os.Setstate(Used)
+		os.change = true
+	}
+
+	return nil
+}
+
 func (r *NFSRoot) Download(path string) error {
 	item := r.resolve(path)
 	if item.Ino == 0 {
@@ -56,23 +137,31 @@ func (r *NFSRoot) Download(path string) error {
 
 	cachePath := r.CachePath(item.Ino)
 	os := r.ApplyOpenStat(item.Ino, &item.Stat)
+	defer r.ReleaseOpenStat(item.Ino)
 
-	// TODO: check it is in downloading
-	cli, err := sync.NewClient(grpc.WithInsecure())
-	if err != nil {
-		return err
+	return r.download(os, path, cachePath)
+}
+
+func (r *NFSRoot) upload(os *openStat, path, cache string) error {
+	// TODO: refine st == uploading, dont redo upload
+	if st := os.Getstate(); st == Used || st == Uploading {
+		// TODO: sync client pool
+		cli, err := sync.NewClient(grpc.WithInsecure())
+		if err != nil {
+			return err
+		}
+		defer cli.Close()
+
+		os.Setstate(Uploading)
+		if err := cli.Put(cache, path); err != nil {
+			os.Setstate(Used)
+			return err
+		}
+
+		os.Setstate(Archived)
+		os.archive = true
+		os.change = true
 	}
-	defer cli.Close()
-
-	os.st.X__unused[1] = Downloading
-	if err := cli.Get(path, cachePath); err != nil {
-		os.st.X__unused[1] = Archived
-		return err
-	}
-
-	os.st.X__unused[1] = Used
-	os.change = true
-	r.ReleaseOpenStat(item.Ino)
 
 	return nil
 }
@@ -90,27 +179,9 @@ func (r *NFSRoot) Upload(path string) error {
 
 	cachePath := r.CachePath(item.Ino)
 	os := r.ApplyOpenStat(item.Ino, &item.Stat)
+	defer r.ReleaseOpenStat(item.Ino)
 
-	// TODO: sync client pool
-	// TODO: check it is in uploading
-	cli, err := sync.NewClient(grpc.WithInsecure())
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-
-	os.st.X__unused[1] = Uploading
-	if err := cli.Put(cachePath, path); err != nil {
-		os.st.X__unused[1] = Used
-		return err
-	}
-
-	os.st.X__unused[1] = Archived
-	os.archive = true
-	os.change = true
-	r.ReleaseOpenStat(item.Ino)
-
-	return nil
+	return r.upload(os, path, cachePath)
 }
 
 func (r *NFSRoot) OpenStats() *openStats {
@@ -364,13 +435,11 @@ func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 	}
 
 	flags = flags &^ syscall.O_APPEND
-	fd, err := syscall.Open(n.cachePath(ch), int(flags)|os.O_CREATE|os.O_TRUNC, mode)
+	os, fd, err := n.RootData.create(ch, int(flags), &st)
 	if err != nil {
 		n.RootData.delete(ch)
 		return nil, nil, 0, fs.ToErrno(err)
 	}
-
-	os := n.RootData.applyOpenStat(ch, &st)
 
 	// TODO: n.NewNFSCache()
 	lf := NewNFSCache(fd, os)
@@ -566,13 +635,12 @@ func (n *NFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fus
 	self := n.EmbeddedInode()
 	flags = flags &^ syscall.O_APPEND
 	//TODO OPEN_TRUNC, state check
-	p := n.cachePath(self)
-	f, err := syscall.Open(p, int(flags), 0)
+
+	os, f, err := n.RootData.open(self, int(flags))
 	if err != nil {
 		return nil, 0, fs.ToErrno(err)
 	}
-	st := n.RootData.getattr(self)
-	os := n.RootData.applyOpenStat(self, st)
+
 	lf := NewNFSCache(f, os)
 	return lf, 0, 0
 }
@@ -706,6 +774,43 @@ func (n *NFSNode) Mknod(ctx context.Context, name string, mode, rdev uint32, out
 	out.Attr.FromStat(&st)
 
 	return ch, 0
+}
+
+var _ = (fs.NodeReader)((*NFSNode)(nil))
+
+func (n *NFSNode) Read(ctx context.Context, fh fs.FileHandle, buf []byte, off int64) (res fuse.ReadResult, errno syscall.Errno) {
+	c := fh.(*NFScache)
+	if err := n.RootData.download(c.os, n.Path(n.Root()), n.cachePath(n.EmbeddedInode())); err != nil {
+		return nil, fs.ToErrno(err)
+	}
+
+	r := fuse.ReadResultFd(uintptr(c.fd), off, len(buf))
+	t := time.Now()
+	c.setAtime(t)
+	return r, fs.OK
+}
+
+var _ = (fs.NodeWriter)((*NFSNode)(nil))
+
+func (nd *NFSNode) Write(ctx context.Context, fh fs.FileHandle, data []byte, off int64) (uint32, syscall.Errno) {
+	c := fh.(*NFScache)
+	if err := nd.RootData.download(c.os, nd.Path(nd.Root()), nd.cachePath(nd.EmbeddedInode())); err != nil {
+		return 0, fs.ToErrno(err)
+	}
+
+	c.os.mu.Lock()
+	defer c.os.mu.Unlock()
+	n, err := syscall.Pwrite(c.fd, data, off)
+	if err == nil {
+		sz := int64(n) + off
+		if sz > c.os.st.Size {
+			c.setSize(sz)
+		}
+		t := time.Now()
+		c.setMtime(t)
+		//f.os.write = true
+	}
+	return uint32(n), fs.ToErrno(err)
 }
 
 /*var _ = (NodeStatfser)((*NFSNode)(nil))

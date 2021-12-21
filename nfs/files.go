@@ -2,7 +2,6 @@ package nfs
 
 import (
 	"context"
-	"os"
 	"syscall"
 	"time"
 
@@ -26,42 +25,6 @@ type NFScache struct {
 }
 
 var _ = (fs.FileHandle)((*NFScache)(nil))
-var _ = (fs.FileReader)((*NFScache)(nil))
-var _ = (fs.FileWriter)((*NFScache)(nil))
-
-func (f *NFScache) Read(ctx context.Context, buf []byte, off int64) (res fuse.ReadResult, errno syscall.Errno) {
-	//f.os.mu.Lock()
-	if f.os.Getstate() == Archived {
-		return nil, fs.ToErrno(os.ErrNotExist)
-	}
-	//f.os.mu.UnLock()
-
-	r := fuse.ReadResultFd(uintptr(f.fd), off, len(buf))
-	t := time.Now()
-	f.os.mu.Lock()
-	f.setAtime(t)
-	//f.os.read = true
-	f.os.mu.Unlock()
-	return r, fs.OK
-}
-
-func (f *NFScache) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
-	if f.os.Getstate() == Archived {
-		return 0, fs.ToErrno(os.ErrNotExist)
-	}
-
-	n, err := syscall.Pwrite(f.fd, data, off)
-	if err == nil {
-		sz := int64(n) + off
-		if sz > f.os.st.Size {
-			f.setSize(sz)
-		}
-		t := time.Now()
-		f.setMtime(t)
-		//f.os.write = true
-	}
-	return uint32(n), fs.ToErrno(err)
-}
 
 func (f *NFScache) Allocate(ctx context.Context, off uint64, n uint64, mode uint32) syscall.Errno {
 	n64 := int64(n)
