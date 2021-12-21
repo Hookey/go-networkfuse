@@ -2,7 +2,6 @@ package nfs
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
@@ -388,7 +387,7 @@ func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOu
 		st := n.RootData.getattr(self)
 
 		if st.Ino == 0 {
-			return fs.ToErrno(os.ErrNotExist)
+			return fs.ToErrno(syscall.ENOENT)
 		}
 		out.FromStat(st)
 	}
@@ -412,7 +411,7 @@ func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	logger.Infof("lookup  %s/%s", n.Path(n.Root()), name)
 	i := n.RootData.lookup(pr, name)
 	if i.Ino == 0 { //TODO: check link=0, handle deferDel, don't let looked up
-		return nil, fs.ToErrno(os.ErrNotExist)
+		return nil, fs.ToErrno(syscall.ENOENT)
 	}
 
 	out.Attr.FromStat(&i.Stat)
@@ -525,7 +524,7 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 		return fs.OK
 	}
 
-	logger.Infof("Unlink /%s/%s", n.Path(n.Root()), name)
+	logger.Infof("Unlink %s/%s", n.Path(n.Root()), name)
 
 	// Update Nlink of openstat to 0
 	if os := n.RootData.getOpenStat(ch); os != nil {
@@ -573,6 +572,7 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 		if os := n.RootData.getOpenStat(ch2); os != nil {
 			os.mu.Lock()
 			os.st.Ctim = now
+			os.change = true
 			os.mu.Unlock()
 		}
 	} else {
@@ -602,6 +602,7 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	if os := n.RootData.getOpenStat(ch1); os != nil {
 		os.mu.Lock()
 		os.st.Ctim = now
+		os.change = true
 		os.mu.Unlock()
 	}
 
