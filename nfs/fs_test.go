@@ -81,7 +81,7 @@ func newTestCase(t *testing.T, opts *testOptions) *testCase {
 		t.Fatalf("NewDB(%s): %v\n", tc.dbDir, err)
 	}
 
-	tc.nfs, err = NewNFSRoot(tc.origDir, tc.store)
+	_, tc.nfs, err = NewNFSRoot(tc.origDir, tc.store)
 	if err != nil {
 		t.Fatalf("NewNFS: %v", err)
 	}
