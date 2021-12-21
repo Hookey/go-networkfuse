@@ -39,7 +39,7 @@ func (s *MetaStore) hashLink(pino uint64, name string) uint64 {
 }
 
 func (s *MetaStore) Insert(pino uint64, name string, st *syscall.Stat_t, gen uint64, target string) error {
-	i := Item{Ino: st.Ino, Link: Link_t{Pino: pino, Name: name}, Hash: s.hashLink(pino, name), Stat: *st, Gen: gen, Symlink: target, State: Used}
+	i := Item{Ino: st.Ino, Link: Link_t{Pino: pino, Name: name}, Hash: s.hashLink(pino, name), Stat: *st, Gen: gen, Symlink: target}
 	return s.Store.Upsert(st.Ino, i)
 }
 
@@ -53,7 +53,7 @@ func (s *MetaStore) LookupDentry(pino uint64, name string) *Item {
 	var i Item
 	h := s.hashLink(pino, name)
 	s.Store.ForEach(badgerhold.Where("Hash").Eq(h).Index("hashIdx"), func(record *Item) error {
-		if record.State == Used && record.Link.Pino == pino && record.Link.Name == name {
+		if record.Stat.X__unused[1] == Used && record.Link.Pino == pino && record.Link.Name == name {
 			i = *record
 			return fmt.Errorf("Got it!")
 		}
@@ -101,7 +101,6 @@ func (s *MetaStore) SoftDelete(ino uint64) error {
 		}
 
 		i.Stat.X__unused[1] = Recycled
-		i.State = Recycled
 		i.Link.Pino = RecycleBin
 		i.Stat.Nlink -= 1
 		return nil
@@ -112,14 +111,13 @@ func (s *MetaStore) SoftDelete(ino uint64) error {
 func (s *MetaStore) ApplyIno() (uint64, uint64) {
 	var ino, gen uint64
 	//TODO: test parallel applyino
-	s.Store.UpdateMatching(&Item{}, badgerhold.Where("State").Eq(Recycled).Limit(1), func(record interface{}) error {
+	s.Store.UpdateMatching(&Item{}, badgerhold.Where("Link.Pino").Eq(RecycleBin).Limit(1), func(record interface{}) error {
 		i, ok := record.(*Item)
 		if !ok {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
 		i.Stat.X__unused[1] = Reclaiming
-		i.State = Reclaiming
 		i.Link.Pino = ReclaimBin
 		ino, gen = i.Ino, i.Gen
 		return nil
@@ -129,14 +127,13 @@ func (s *MetaStore) ApplyIno() (uint64, uint64) {
 
 // CollectTempIno collects all inos under temp bin, move to recycle bin. A cleanup for abnormal shutdown.
 func (s *MetaStore) CollectTempIno() error {
-	return s.Store.UpdateMatching(&Item{}, badgerhold.Where("State").Eq(Reclaiming), func(record interface{}) error {
+	return s.Store.UpdateMatching(&Item{}, badgerhold.Where("Link.Pino").Eq(ReclaimBin), func(record interface{}) error {
 		i, ok := record.(*Item)
 		if !ok {
 			return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 		}
 
 		i.Stat.X__unused[1] = Recycled
-		i.State = Recycled
 		i.Link.Pino = RecycleBin
 		return nil
 	})
@@ -166,7 +163,7 @@ func (s *MetaStore) DeleteDentry(pino uint64, name string) error {
 	return err
 }
 
-// ReplaceOpen is a variant of rename, stop from ino2 being applied, make it in reclaiming state
+// ReplaceOpen is a variant of rename, stop from ino2 being applied, when it's still open, make it in reclaiming state
 func (s *MetaStore) ReplaceOpen(ino, ino2, pino2 uint64, name2 string, now *syscall.Timespec) error {
 	var hash2 uint64
 	return s.Store.Badger().Update(func(tx *badger.Txn) error {
@@ -176,9 +173,8 @@ func (s *MetaStore) ReplaceOpen(ino, ino2, pino2 uint64, name2 string, now *sysc
 				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 			}
 
-			if i.State == Used {
+			if i.Stat.X__unused[1] == Used {
 				i.Stat.X__unused[1] = Reclaiming
-				i.State = Reclaiming
 				i.Link.Pino = ReclaimBin
 			}
 			hash2 = i.Hash
@@ -212,7 +208,6 @@ func (s *MetaStore) Replace(ino, ino2, pino2 uint64, name2 string, now *syscall.
 				return fmt.Errorf("Record isn't the correct type!  Wanted Item, got %T", record)
 			}
 
-			i.State = Recycled
 			i.Stat.X__unused[1] = Recycled
 			i.Link.Pino = RecycleBin
 			i.Stat.Nlink -= 1
@@ -311,5 +306,4 @@ type Item struct {
 	Link    Link_t
 	Stat    syscall.Stat_t
 	Symlink string
-	State   int64
 }
