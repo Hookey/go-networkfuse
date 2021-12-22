@@ -18,7 +18,6 @@ func put(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	path := args[0]
-	path = strings.TrimLeft(path, "/")
 	path = strings.TrimRight(path, "/")
 
 	reply, err := c.Put(context.Background(), &pb.PutRequest{Path: path})

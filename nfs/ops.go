@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Hookey/go-networkfuse/sync"
+	"github.com/Hookey/go-sync/api/client"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	logging "github.com/ipfs/go-log/v2"
@@ -36,6 +36,9 @@ type NFSRoot struct {
 
 	// The in-memory shared data for open files indexed with inode number.
 	openStats
+
+	// syncagent address
+	syncAddr string
 
 	// NewNode returns a new InodeEmbedder to be used to respond
 	// to a LOOKUP/CREATE/MKDIR/MKNOD opcode. If not set, use a
@@ -104,7 +107,7 @@ func (r *NFSRoot) download(os *openStat, path, cache string) error {
 	defer os.mu.Unlock()
 
 	if os.Getstate() == Unused {
-		cli, err := sync.NewClient(grpc.WithInsecure())
+		cli, err := client.NewClient(r.syncAddr, grpc.WithInsecure())
 		if err != nil {
 			return err
 		}
@@ -145,7 +148,7 @@ func (r *NFSRoot) upload(os *openStat, path, cache string) error {
 	// TODO: refine st == uploading, dont redo upload
 	if st := os.Getstate(); st == Used || st == Uploading {
 		// TODO: sync client pool
-		cli, err := sync.NewClient(grpc.WithInsecure())
+		cli, err := client.NewClient(r.syncAddr, grpc.WithInsecure())
 		if err != nil {
 			return err
 		}
@@ -321,7 +324,7 @@ func idFromStat(st *syscall.Stat_t, gen uint64) fs.StableAttr {
 // NewNFSRoot returns a root node for a network file system whose
 // root is at the given root. This node implements all NodeXxxxer
 // operations available.
-func NewNFSRoot(rootPath string, store *MetaStore) (*NFSRoot, fs.InodeEmbedder, error) {
+func NewNFSRoot(rootPath string, store *MetaStore, addr string) (*NFSRoot, fs.InodeEmbedder, error) {
 	var st syscall.Stat_t
 	err := syscall.Stat(rootPath, &st)
 	if err != nil {
@@ -333,6 +336,7 @@ func NewNFSRoot(rootPath string, store *MetaStore) (*NFSRoot, fs.InodeEmbedder, 
 		Dev:       uint64(st.Dev),
 		MetaStore: store,
 		openStats: openStats{stats: map[uint64]*openStat{}},
+		syncAddr:  addr,
 	}
 
 	root.nextNodeId = store.NextAllocateIno()

@@ -17,7 +17,6 @@ import (
 	"github.com/Hookey/go-networkfuse/api"
 	pb "github.com/Hookey/go-networkfuse/api/pb"
 	"github.com/Hookey/go-networkfuse/nfs"
-	"github.com/Hookey/go-networkfuse/sync"
 	fuse "github.com/hanwen/go-fuse/v2/fs"
 	logging "github.com/ipfs/go-log/v2"
 	"go.uber.org/zap/zapcore"
@@ -88,8 +87,7 @@ func runServer(port *string, r *nfs.NFSRoot) error {
 
 func main() {
 	// TODO: use config or is this ok?
-	sync.Addr = flag.String("addr", "localhost:50051", "sync address")
-	sync.Prefix = flag.String("prefix", "/archfs", "cloud path prefix")
+	addr := flag.String("addr", "localhost:50051", "sync address")
 	port := flag.String("port", ":50052", "nfuse cli port")
 	debug := flag.Bool("debug", false, "print debug data")
 	db := flag.String("db", ".db", "db location")
@@ -126,7 +124,7 @@ func main() {
 
 	//TODO: root.embed().stableattr.ino is set to 0, should be 1 instead. Need to wait go-fuse fix
 	// https://github.com/hanwen/go-fuse/issues/399
-	nfsRoot, embedNode, err := nfs.NewNFSRoot(orig, store)
+	nfsRoot, embedNode, err := nfs.NewNFSRoot(orig, store, *addr)
 	if err != nil {
 		log.Fatalf("NewLoopbackRoot(%s): %v\n", orig, err)
 	}
