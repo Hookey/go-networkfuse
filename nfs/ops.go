@@ -98,7 +98,7 @@ func (r *NFSRoot) openCache(os *openStat, cache string, flags int) (fd int, err 
 		os.change = true
 	}
 
-	fd, err = syscall.Open(cache, flags&^syscall.O_TRUNC&^syscall.O_NOFOLLOW, os.st.Mode)
+	fd, err = syscall.Open(cache, flags&^syscall.O_TRUNC&^syscall.O_NOFOLLOW&^syscall.O_EXCL, os.st.Mode)
 	return
 }
 
