@@ -1,12 +1,10 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 
-	pb "github.com/Hookey/go-networkfuse/api/pb"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -20,7 +18,7 @@ func put(cmd *cobra.Command, args []string) (err error) {
 	path := args[0]
 	path = strings.TrimRight(path, "/")
 
-	reply, err := c.Put(context.Background(), &pb.PutRequest{Path: path})
+	reply, err := c.Put(path)
 	st, ok := status.FromError(err)
 	if !ok {
 		// Error was not a status error
