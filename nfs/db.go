@@ -53,7 +53,7 @@ func (s *MetaStore) LookupDentry(pino uint64, name string) *Item {
 	var i Item
 	h := s.hashLink(pino, name)
 	s.Store.ForEach(badgerhold.Where("Hash").Eq(h).Index("hashIdx"), func(record *Item) error {
-		if record.Stat.X__unused[1] == Used && record.Link.Pino == pino && record.Link.Name == name {
+		if record.Stat.X__unused[1] >= Used && record.Link.Pino == pino && record.Link.Name == name {
 			i = *record
 			return fmt.Errorf("Got it!")
 		}
