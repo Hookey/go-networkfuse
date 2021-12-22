@@ -375,11 +375,19 @@ func (n *NFSNode) path() string {
 	return filepath.Join(n.RootData.Path, path)
 }
 
+func (n *NFSNode) absPath() string {
+	path := n.Path(n.Root())
+	if len(path) != 0 {
+		return filepath.Join("/", path)
+	}
+	return path
+}
+
 var _ = (fs.NodeGetattrer)((*NFSNode)(nil))
 var _ = (fs.FileHandle)((*NFScache)(nil))
 
 func (n *NFSNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	logger.Infof("getattr %s", n.Path(n.Root()))
+	logger.Infof("getattr %s", n.absPath())
 
 	// go-fuse searches any existing filehandle, then it is doable to translate getattr to fgetattr.
 	self := n.EmbeddedInode()
@@ -404,7 +412,7 @@ func (n *NFSNode) Release(ctx context.Context, f fs.FileHandle) syscall.Errno {
 	self := n.EmbeddedInode()
 	n.RootData.releaseOpenStat(self)
 	c := f.(*NFScache)
-	logger.Infof("release  %s, %v", n.Path(n.Root()), c.getAttr())
+	logger.Infof("release  %s, %v", n.absPath(), c.getAttr())
 	return c.Close()
 }
 
@@ -412,7 +420,7 @@ var _ = (fs.NodeLookuper)((*NFSNode)(nil))
 
 func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	pr := n.EmbeddedInode()
-	logger.Infof("lookup  %s/%s", n.Path(n.Root()), name)
+	logger.Infof("lookup  %s/%s", n.absPath(), name)
 	i := n.RootData.lookup(pr, name)
 	if i.Ino == 0 { //TODO: check link=0, handle deferDel, don't let looked up
 		return nil, fs.ToErrno(syscall.ENOENT)
@@ -427,7 +435,7 @@ func (n *NFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 var _ = (fs.NodeCreater)((*NFSNode)(nil))
 
 func (n *NFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	logger.Infof("create %s/%s, %o", n.Path(n.Root()), name, mode)
+	logger.Infof("create %s/%s, %o", n.absPath(), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFREG}
 	n.generalizeStat(ctx, &st)
 
@@ -487,7 +495,7 @@ func (n *NFSNode) generalizeStat(ctx context.Context, st *syscall.Stat_t) {
 var _ = (fs.NodeMkdirer)((*NFSNode)(nil))
 
 func (n *NFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	logger.Infof("mkdir %s/%s, %o", n.Path(n.Root()), name, mode)
+	logger.Infof("mkdir %s/%s, %o", n.absPath(), name, mode)
 	st := syscall.Stat_t{Mode: mode | syscall.S_IFDIR}
 	n.generalizeStat(ctx, &st)
 	pr := n.EmbeddedInode()
@@ -511,7 +519,7 @@ func (n *NFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 		return fs.OK
 	}
 
-	logger.Infof("Rmdir %s/%s, %v", n.Path(n.Root()), name, ch.StableAttr().Ino)
+	logger.Infof("Rmdir %s/%s, %v", n.absPath(), name, ch.StableAttr().Ino)
 
 	if !n.RootData.isEmptyDir(ch) {
 		return syscall.ENOTEMPTY
@@ -528,7 +536,7 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 		return fs.OK
 	}
 
-	logger.Infof("Unlink %s/%s", n.Path(n.Root()), name)
+	logger.Infof("Unlink %s/%s", n.absPath(), name)
 
 	// Update Nlink of openstat to 0
 	if os := n.RootData.getOpenStat(ch); os != nil {
@@ -785,7 +793,7 @@ var _ = (fs.NodeReader)((*NFSNode)(nil))
 
 func (n *NFSNode) Read(ctx context.Context, fh fs.FileHandle, buf []byte, off int64) (res fuse.ReadResult, errno syscall.Errno) {
 	c := fh.(*NFScache)
-	if err := n.RootData.download(c.os, n.Path(n.Root()), n.cachePath(n.EmbeddedInode())); err != nil {
+	if err := n.RootData.download(c.os, n.absPath(), n.cachePath(n.EmbeddedInode())); err != nil {
 		return nil, fs.ToErrno(err)
 	}
 
