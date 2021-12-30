@@ -227,7 +227,7 @@ func TestReadDirStress(t *testing.T) {
 	var wg sync.WaitGroup
 	stress := func(gr int) {
 		defer wg.Done()
-		for i := 1; i < 100; i++ {
+		for i := 1; i < 10; i++ {
 			f, err := os.Open(tc.mntDir)
 			if err != nil {
 				t.Error(err)
