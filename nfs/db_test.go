@@ -26,6 +26,7 @@ func quickInsert(ms *MetaStore, num int) (err error) {
 		ino := uint64(i + 1)
 		pino := uint64(i)
 		st := syscall.Stat_t{Ino: ino}
+		st.X__unused[1] = Used
 		name := fmt.Sprintf("%v", ino)
 		err = ms.Insert(pino, name, &st, 0, "")
 		if err != nil {
