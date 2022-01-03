@@ -25,7 +25,7 @@ format:
   stage: test
   script:
     - go vet $(go list ./... | grep -v /vendor/)
-    - go test -race $(go list ./... | grep -v /vendor/)
+    - go test -v $(go list ./... | grep -v /vendor/)
 
 compile:
   stage: build
