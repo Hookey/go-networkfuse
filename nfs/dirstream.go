@@ -10,12 +10,15 @@ import (
 
 type NFSDirStream struct {
 	// Protects against clean buf
-	mu     sync.Mutex
-	ino    uint64
-	offset int
+	mu  sync.Mutex
+	ino uint64
 
 	//TODO: shared among readdir
 	buf []*Item
+	// buf offset
+	boffset int
+	// dentry offset in buf[i]
+	doffset int
 }
 
 func NewNFSDirStream(self *fs.Inode, readdir func(self *fs.Inode) []*Item) (fs.DirStream, syscall.Errno) {
@@ -38,21 +41,44 @@ func (ds *NFSDirStream) HasNext() bool {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	return len(ds.buf) > ds.offset
+	for ; ds.boffset < len(ds.buf); ds.boffset++ {
+		i := ds.buf[ds.boffset]
+
+		// These are "." and ".."
+		if ds.boffset < 2 {
+			return true
+		}
+
+		for ; ds.doffset < len(i.Name); ds.doffset++ {
+			if i.Pino[ds.doffset] == ds.ino {
+				return true
+			}
+		}
+		ds.doffset = 0
+	}
+
+	return false
 }
 
 func (ds *NFSDirStream) Next() (fuse.DirEntry, syscall.Errno) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	i := ds.buf[ds.offset]
+	i := ds.buf[ds.boffset]
+	logger.Infof("%v, %d, %d", i.Ino, len(ds.buf), len(i.Name))
 
 	result := fuse.DirEntry{
 		Ino:  i.Ino,
 		Mode: i.Stat.Mode,
-		Name: i.Link.Name,
+		Name: i.Name[ds.doffset],
 	}
-	ds.offset++
+
+	// These are "." and ".."
+	if ds.boffset < 2 {
+		ds.boffset++
+	} else {
+		ds.doffset++
+	}
 
 	return result, fs.OK
 }

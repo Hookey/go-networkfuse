@@ -58,9 +58,9 @@ func TestResolve(t *testing.T) {
 
 	for _, tt := range tests {
 		i := tc.store.Resolve(tt.path)
-		if i.Link.Name != tt.name || i.Ino != tt.ino {
+		if i.Dentry.Name != tt.name || i.Ino != tt.ino {
 			t.Errorf("Resolve(%v) = %v,%v expected %v,%v",
-				tt.path, i.Ino, i.Link.Name, tt.ino, tt.name)
+				tt.path, i.Ino, i.Dentry.Name, tt.ino, tt.name)
 		}
 	}
 

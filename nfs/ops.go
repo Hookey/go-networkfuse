@@ -245,6 +245,11 @@ func (r *NFSRoot) getattr(self *fs.Inode) *syscall.Stat_t {
 	return &i.Stat
 }
 
+func (r *NFSRoot) link(parent *fs.Inode, name string, child *fs.Inode) *syscall.Stat_t {
+	i := r.MetaStore.Link(parent.StableAttr().Ino, name, child.StableAttr().Ino)
+	return &i.Stat
+}
+
 // readdir lookups one of parent, self, children
 func (r *NFSRoot) readdir(self *fs.Inode) []*Item {
 	var i *Item
@@ -254,11 +259,16 @@ func (r *NFSRoot) readdir(self *fs.Inode) []*Item {
 	} else {
 		i = r.MetaStore.Lookup(RootBin)
 	}
-	i.Link.Name = ".."
+	i.Name = nil
+	i.Name = append(i.Name, "..")
 
 	is := r.MetaStore.ReadDir(self.StableAttr().Ino)
-	is[0].Link.Name = "."
+	is[0].Name[0] = "."
+	is[0].Name = is[0].Name[:1]
 	is = append(is, i)
+
+	// Make is[0], is[1] special entries
+	is[1], is[len(is)-1] = is[len(is)-1], is[1]
 	return is
 }
 
@@ -275,6 +285,11 @@ func (r *NFSRoot) delete(self *fs.Inode) error {
 	return r.MetaStore.SoftDelete(self.StableAttr().Ino)
 }
 
+func (r *NFSRoot) deleteDentry(parent *fs.Inode, name string) *syscall.Stat_t {
+	i := r.MetaStore.DeleteDentry(parent.StableAttr().Ino, name)
+	return &i.Stat
+}
+
 func (r *NFSRoot) applyIno() (uint64, uint64) {
 	if ino, gen := r.MetaStore.ApplyIno(); ino > 0 {
 		return ino, gen + 1
@@ -287,20 +302,20 @@ func (r *NFSRoot) isEmptyDir(self *fs.Inode) bool {
 	return r.MetaStore.IsEmptyDir(self.StableAttr().Ino)
 }
 
-func (r *NFSRoot) replaceOpen(src, dst, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
-	return r.MetaStore.ReplaceOpen(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
+func (r *NFSRoot) replaceOpen(src, srcDir, dst, dstDir *fs.Inode, srcname, dstname string, now *syscall.Timespec) error {
+	return r.MetaStore.ReplaceOpen(src.StableAttr().Ino, srcDir.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, srcname, dstname, now)
 }
 
-func (r *NFSRoot) replace(src, dst, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
-	return r.MetaStore.Replace(src.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
+func (r *NFSRoot) replace(src, srcDir, dst, dstDir *fs.Inode, srcname, dstname string, now *syscall.Timespec) error {
+	return r.MetaStore.Replace(src.StableAttr().Ino, srcDir.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, srcname, dstname, now)
 }
 
 func (r *NFSRoot) exchange(src, srcDir, dst, dstDir *fs.Inode, srcname, dstname string, now *syscall.Timespec) error {
 	return r.MetaStore.Exchange(src.StableAttr().Ino, srcDir.StableAttr().Ino, dst.StableAttr().Ino, dstDir.StableAttr().Ino, srcname, dstname, now)
 }
 
-func (r *NFSRoot) rename(src, dstDir *fs.Inode, dstname string, now *syscall.Timespec) error {
-	return r.MetaStore.Rename(src.StableAttr().Ino, dstDir.StableAttr().Ino, dstname, now)
+func (r *NFSRoot) rename(src, srcDir, dstDir *fs.Inode, srcname, dstname string, now *syscall.Timespec) error {
+	return r.MetaStore.Rename(src.StableAttr().Ino, srcDir.StableAttr().Ino, dstDir.StableAttr().Ino, srcname, dstname, now)
 }
 
 func (r *NFSRoot) resolve(path string) *Item {
@@ -524,7 +539,7 @@ func (n *NFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 	if !n.RootData.isEmptyDir(ch) {
 		return syscall.ENOTEMPTY
 	}
-	n.RootData.delete(ch)
+	n.RootData.deleteDentry(pr, name)
 	return fs.OK
 }
 
@@ -541,15 +556,17 @@ func (n *NFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 	// Update Nlink of openstat to 0
 	if os := n.RootData.getOpenStat(ch); os != nil {
 		os.mu.Lock()
+		//TODO: delete dentry when open, applied for rename
 		os.st.Nlink -= 1
 		if os.st.Nlink == 0 {
 			os.deferDel = true
 		}
 		os.mu.Unlock()
 	} else {
-		n.RootData.delete(ch)
-		// TODO: go routine?
-		syscall.Unlink(n.cachePath(ch))
+		st := n.RootData.deleteDentry(pr, name)
+		if st.Nlink == 0 {
+			syscall.Unlink(n.cachePath(ch))
+		}
 	}
 	return fs.OK
 }
@@ -621,11 +638,11 @@ func (n *NFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	var err error
 	switch op {
 	case RENAME:
-		err = n.RootData.rename(ch1, pr2, newName, &now)
+		err = n.RootData.rename(ch1, pr1, pr2, name, newName, &now)
 	case REPLACE:
-		err = n.RootData.replace(ch1, ch2, pr2, newName, &now)
+		err = n.RootData.replace(ch1, pr1, ch2, pr2, name, newName, &now)
 	case REPLACE_OPEN:
-		err = n.RootData.replaceOpen(ch1, ch2, pr2, newName, &now)
+		err = n.RootData.replaceOpen(ch1, pr1, ch2, pr2, name, newName, &now)
 	case EXCHANGE:
 		err = n.RootData.exchange(ch1, pr1, ch2, pr2, name, newName, &now)
 	}
@@ -749,6 +766,7 @@ var _ = (fs.NodeOpendirer)((*NFSNode)(nil))
 func (n *NFSNode) Opendir(ctx context.Context) syscall.Errno {
 	//TODO: May use this to trigger sync dir content
 	//TODO: share dirstream
+	logger.Infof("opendir %v", n.StableAttr().Ino)
 	return fs.OK
 }
 
@@ -824,6 +842,17 @@ func (nd *NFSNode) Write(ctx context.Context, fh fs.FileHandle, data []byte, off
 		//f.os.write = true
 	}
 	return uint32(n), fs.ToErrno(err)
+}
+
+var _ = (fs.NodeLinker)((*NFSNode)(nil))
+
+func (n *NFSNode) Link(ctx context.Context, target fs.InodeEmbedder, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	pr := n.EmbeddedInode()
+	ch := target.EmbeddedInode()
+	st := n.RootData.link(pr, name, ch)
+
+	out.Attr.FromStat(st)
+	return ch, 0
 }
 
 /*var _ = (NodeStatfser)((*NFSNode)(nil))
