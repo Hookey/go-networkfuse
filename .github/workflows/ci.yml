@@ -31,4 +31,4 @@ jobs:
     - run: sudo apt-get install -qq fuse3 libssl-dev libfuse-dev
 
     # Actual test steps are in all.sh
-    - run: ./all.sh
+    - run: ./scripts/all.sh
