@@ -6,8 +6,20 @@ A user-space filesystem based on
 [github.com/hanwen/go-fuse/fs](https://godoc.org/github.com/hanwen/go-fuse/fs)
 
 Use [badgerhold](https://github.com/timshannon/badgerhold) to store metadata, and use underlying filesystem to hold cache.
+Use [go-syncagent](https://github.com/Hookey/go-sync) to archive data.
 
-# How to use AFS
+## Code Structure
+* /cmd: Main applications for this project.
+* /api: Service for cli, protocol definition files.
+* /go-networkfuse
+  * /nfs: Core logic of fs app, including fs operations, db operations.
+  * /build/ci
+* /go-syncagent
+  * /core: Storage interface.
+  * /dropboxsdk: dropbox run-time operations.
+  * /agent: agent handling cloud-specific config and verification.
+
+## How to use AFS
 1. Take dropbox as an example, and apply dropbox app key/secret.
 1. Setup [syncagent](https://github.com/Hookey/go-sync) with key/secret and finish oauth2 token exchange
 ```
@@ -30,3 +42,4 @@ go run networkfuse/cmd/cli.go --addr $fuseAddr put $file
 ```
 go run networkfuse/cmd/cli.go --addr $fuseAddr get $file
 ```
+
